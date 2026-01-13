@@ -1,278 +1,184 @@
 import asyncio
 import os
 import re
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
+from dataclasses import dataclass
+import base64
+
 from crawl4ai import AsyncWebCrawler
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types  # Import types for multimodal parts
+from pydantic_ai import Agent, RunContext
 
 # Load environment variables
 load_dotenv()
 
-def extract_domain(url: str) -> str:
-    """Extract domain from URL."""
-    parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}"
+@dataclass
+class CrawlerDeps:
+    """Dependencies for the crawler tools."""
+    api_key: str
+    base_url: Optional[str] = None
 
-async def get_links_from_gemini(markdown_content: str, start_url: str, base_domain: str) -> list[str]:
-    """Use Gemini to extract sub-pages of the starting URL that should be crawled."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY not found in .env file")
-    
-    client = genai.Client(api_key=api_key)
-    
-    prompt = f"""Analyze the following markdown content and extract ONLY URLs/links that are sub-pages of {start_url}.
+# Create the Agent
+kb_agent = Agent(
+    'google-gla:gemini-2.5-flash',
+    deps_type=CrawlerDeps,
+    system_prompt=(
+        "You are a Knowledge Base Specialist. Your goal is to help users create comprehensive, "
+        "clean, and deduplicated knowledge bases from websites. "
+        "Use the provided tool to crawl pages and build the KB. "
+        "When the tool returns the content, provide a summary of what was collected."
+    ),
+)
 
-Requirements:
-- ONLY include links that start with {start_url} (sub-pages of this specific path)
-- These should be direct child pages or deeper pages under {start_url}
-- Focus on content pages (not navigation, footer, or utility links)
-- Pages with substantial information
-- Avoid: social media links, external sites, image URLs, CSS/JS files, anchor links (#), tel: or mailto: links
-- If a URL is relative (starts with /), convert it to absolute by prepending {base_domain}
-- Only include URLs that are clearly sub-pages of {start_url}
-
-Return ONLY a list of URLs, one per line, with no additional text or formatting.
-Each URL must start with {start_url}
-
-Here's the markdown:
-""" + markdown_content
-    
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    links_text = response.text.strip()
-    
-    # Log Gemini response
-    print("\n" + "=" * 80)
-    print("GEMINI RAW RESPONSE:")
-    print("=" * 80)
-    print(links_text)
-    print("=" * 80 + "\n")
-    
-    # Extract URLs from the response
-    urls = []
-    for line in links_text.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-        
-        # Remove markdown link formatting if present
-        match = re.search(r'https?://[^\s\)\]]+', line)
-        if match:
-            url = match.group(0).rstrip(')').rstrip(']').rstrip('.')
-            urls.append(url)
-        elif line.startswith('http'):
-            urls.append(line.rstrip('.'))
-        elif line.startswith('/'):
-            urls.append(f"{base_domain}{line}")
-    
-    # Log extracted URLs before filtering
-    print(f"Extracted {len(urls)} URLs from Gemini response (before filtering):")
-    for url in urls[:20]:  # Show first 20
-        print(f"  - {url}")
-    if len(urls) > 20:
-        print(f"  ... and {len(urls) - 20} more")
-    print()
-    
-    # Filter to only sub-pages of start_url and remove duplicates
-    unique_urls = []
-    seen = set()
-    for url in urls:
-        # Only include URLs that are sub-pages of start_url
-        if not url.startswith(start_url):
-            continue
-        
-        # Skip unwanted URLs
-        if any(skip in url.lower() for skip in ['facebook', 'instagram', 'youtube', '.jpg', '.png', '.webp', '.svg', '.css', '.js', 'tel:', 'mailto:', '#']):
-            continue
-        
-        # Remove fragments
-        url = url.split('#')[0]
-        
-        if url not in seen:
-            seen.add(url)
-            unique_urls.append(url)
-    
-    print(f"After filtering (sub-pages of {start_url} + cleanup): {len(unique_urls)} unique URLs\n")
-    
-    return unique_urls
-
-async def crawl_url(url: str) -> str:
-    """Crawl a single URL and return its markdown content."""
+async def _crawl_single_url(url: str) -> Tuple[str, Optional[str]]:
+    """Helper to crawl a single URL and return markdown + screenshot."""
     async with AsyncWebCrawler() as crawler:
         try:
-            print(f"Crawling: {url}")
-            result = await crawler.arun(url=url)
-            return result.markdown if result.markdown else ""
+            print(f"  [Crawler] Fetching: {url}")
+            # Request markdown and a screenshot for visual data extraction
+            result = await crawler.arun(url=url, screenshot=True)
+            return (result.markdown if result.markdown else "", result.screenshot)
         except Exception as e:
-            print(f"Error crawling {url}: {e}")
-            return ""
+            print(f"  [Crawler] Error fetching {url}: {e}")
+            return ("", None)
 
-async def crawl_urls(urls: list[str]) -> list[tuple[str, str]]:
-    """Crawl multiple URLs and return their markdown content with URLs."""
-    results = []
-    async with AsyncWebCrawler() as crawler:
-        for url in urls:
-            try:
-                print(f"Crawling: {url}")
-                result = await crawler.arun(url=url)
-                if result.markdown:
-                    results.append((url, result.markdown))
-            except Exception as e:
-                print(f"Error crawling {url}: {e}")
-                continue
-    return results
+async def _extract_links_via_gemini(client: genai.Client, markdown: str, start_url: str) -> List[str]:
+    """Helper to extract sub-pages using Gemini."""
+    prompt = f"""Analyze the markdown and extract ONLY URLs that are sub-pages of {start_url}.
+    Requirements:
+    - Return ONLY absolute URLs, one per line.
+    - No markdown formatting (no backticks, no brackets).
+    - No extra text or explanations.
+    - The URLs must start with {start_url}
+    
+    Markdown:
+    {markdown[:50000]}
+    """
+    try:
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        links = []
+        if response.text:
+            # Robustly extract anything that looks like a URL
+            found_urls = re.findall(r'https?://[^\s\)\]`"]+', response.text)
+            for url in found_urls:
+                url = url.strip().strip('*').strip('-').strip().rstrip('.')
+                if url.startswith(start_url) and url != start_url:
+                    links.append(url)
+        
+        return list(set(links))
+    except Exception as e:
+        print(f"  [Tool] Error extracting links: {e}")
+        return []
 
-async def clean_content_with_gemini(content: str, start_url: str) -> str:
-    """Use Gemini to clean up content, remove repetitive stuff, and extract only necessary info."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY not found in .env file")
+async def _clean_content_via_gemini(client: genai.Client, content: str, start_url: str, screenshots: List[str]) -> str:
+    """Helper to deduplicate and clean content, using vision for screenshots."""
     
-    client = genai.Client(api_key=api_key)
+    # Construct multimodal parts
+    # We add the text prompt first, then any screenshots found
+    prompt = f"""Clean and synthesize the following crawled content from {start_url}.
     
-    # Use a larger limit for Gemini 2.5 Flash (can handle ~1M tokens)
-    # But be conservative and use ~200k characters to be safe
-    content_limit = 200000
-    content_to_clean = content[:content_limit] if len(content) > content_limit else content
+    CRITICAL INSTRUCTIONS:
+    1. If you see images/screenshots provided, extract ANY information, text, or data present in those images that isn't in the markdown.
+    2. Remove navigation, footers, and repetitive boilerplate.
+    3. Merge duplicate information.
+    4. Organize logically by topic.
+    5. Keep only substantive, unique information.
     
-    if len(content) > content_limit:
-        print(f"Warning: Content is {len(content)} characters, using first {content_limit} for cleaning")
+    Markdown Content:
+    {content[:100000]} 
+    """
     
-    prompt = f"""Analyze the following crawled content from {start_url} and its sub-pages. Clean it up by:
+    contents = [prompt]
+    
+    # Add screenshots as parts if they exist (Gemini 2.5/2.0 can handle multiple images)
+    for i, b64_img in enumerate(screenshots[:3]): # Limit to first 3 pages to stay safe with tokens
+        contents.append(
+            types.Part.from_bytes(
+                data=base64.b64decode(b64_img),
+                mime_type="image/webp" # crawl4ai typically provides webp
+            )
+        )
 
-1. Remove repetitive content (navigation menus, footers, headers that appear on every page)
-2. Remove duplicate information that appears across multiple pages
-3. Extract only the actual, unique information from each page
-4. Keep all substantive content, facts, and information
-5. Maintain the structure but remove boilerplate
-6. Preserve important details like dates, events, contact info, etc.
-7. Remove common website elements like "Przejdź do menu", language switchers, search boxes, etc.
-8. Organize content logically by topic/page
-9. Remove redundant sections that repeat across pages
-
-Return the cleaned content in markdown format, organized logically by topic/page. Keep all unique and valuable information.
-
-Original content:
-""" + content_to_clean
-    
-    print("\n" + "=" * 80)
-    print("CLEANING CONTENT WITH GEMINI...")
-    print("=" * 80)
-    
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
+            model="gemini-2.5-flash", 
+            contents=contents
         )
-        
-        cleaned_content = response.text.strip()
-        
-        print(f"Content cleaned. Original length: {len(content)} characters")
-        print(f"Cleaned length: {len(cleaned_content)} characters\n")
-        
-        return cleaned_content
+        return response.text if response.text else "Failed to clean content."
     except Exception as e:
-        print(f"Error cleaning content with Gemini: {e}")
-        print("Returning original content without cleaning.")
-        return content
+        print(f"  [Tool] Error in cleaning: {e}")
+        return content[:50000] # Fallback to raw-ish content
 
-async def crawl_and_concatenate(start_url: str, output_file: str = "concatenated_output.md"):
+@kb_agent.tool
+async def build_knowledge_base(ctx: RunContext[CrawlerDeps], start_url: str) -> str:
     """
-    Main method to crawl a URL, extract same-domain links, crawl them, and concatenate results.
+    Crawls a starting URL, finds its sub-pages, crawls them too, and returns a 
+    deduplicated, clean knowledge base in markdown. It uses vision to extract
+    data from images and screenshots as well.
     
     Args:
-        start_url: The initial URL to crawl (e.g., https://opn.gov.pl/aktualnosci)
-        output_file: Name of the output markdown file
+        start_url: The URL to start building the KB from.
     """
-    base_domain = extract_domain(start_url)
-    print(f"Starting crawl from: {start_url}")
-    print(f"Base domain: {base_domain}\n")
+    print(f"\n[Tool] Starting Multimodal KB build for: {start_url}")
+    client = genai.Client(api_key=ctx.deps.api_key)
     
-    # Step 1: Crawl the initial URL
-    print("=" * 80)
-    print("STEP 1: Crawling initial URL")
-    print("=" * 80)
-    initial_markdown = await crawl_url(start_url)
-    
-    if not initial_markdown:
-        print("Failed to crawl initial URL. Exiting.")
-        return
-    
-    print(f"Initial crawl completed. Content length: {len(initial_markdown)} characters\n")
-    
-    # Step 2: Extract links using Gemini
-    print("=" * 80)
-    print("STEP 2: Extracting sub-pages using Gemini")
-    print("=" * 80)
-    links = await get_links_from_gemini(initial_markdown, start_url, base_domain)
-    
-    # Remove the start_url from links if present
-    links = [link for link in links if link != start_url]
-    
-    print(f"Found {len(links)} links to crawl:")
-    for link in links[:10]:  # Show first 10
-        print(f"  - {link}")
-    if len(links) > 10:
-        print(f"  ... and {len(links) - 10} more")
-    print()
-    
-    # Step 3: Crawl the extracted links
-    print("=" * 80)
-    print("STEP 3: Crawling extracted links")
-    print("=" * 80)
-    crawled_results = await crawl_urls(links)
-    print(f"Successfully crawled {len(crawled_results)} additional pages\n")
-    
-    # Step 4: Concatenate all results
-    print("=" * 80)
-    print("STEP 4: Concatenating results")
-    print("=" * 80)
-    
-    all_content = f"# Crawled Content from {start_url}\n\n"
-    all_content += f"Generated from: {start_url}\n"
-    all_content += f"Base domain: {base_domain}\n"
-    all_content += f"Total pages crawled: {len(crawled_results) + 1}\n\n"
-    all_content += "=" * 80 + "\n\n"
-    
-    # Add initial content
-    all_content += f"## Initial Page: {start_url}\n\n"
-    all_content += initial_markdown
-    all_content += "\n\n"
-    
-    # Add crawled content
-    if crawled_results:
-        all_content += "=" * 80 + "\n"
-        all_content += "## Additional Crawled Pages\n"
-        all_content += "=" * 80 + "\n\n"
+    # 1. Crawl initial page
+    initial_md, initial_ss = await _crawl_single_url(start_url)
+    if not initial_md:
+        return "Failed to crawl the starting URL."
+
+    # 2. Extract sub-links
+    print("[Tool] Extracting sub-links...")
+    links = await _extract_links_via_gemini(client, initial_md, start_url)
+    print(f"[Tool] Found {len(links)} sub-pages to crawl.")
+
+    # 3. Crawl sub-pages
+    all_raw_content = f"## Source: {start_url}\n\n{initial_md}\n\n"
+    screenshots = []
+    if initial_ss:
+        screenshots.append(initial_ss)
         
-        for url, markdown in crawled_results:
-            all_content += f"### {url}\n\n"
-            all_content += markdown
-            all_content += "\n\n" + "-" * 80 + "\n\n"
+    for link in links[:3]:  # Limiting to 3 for multimodal speed
+        sub_md, sub_ss = await _crawl_single_url(link)
+        if sub_md:
+            all_raw_content += f"## Source: {link}\n\n{sub_md}\n\n"
+            if sub_ss:
+                screenshots.append(sub_ss)
+
+    # 4. Final Clean (Multimodal)
+    print("[Tool] Cleaning and extracting from images...")
+    clean_kb = await _clean_content_via_gemini(client, all_raw_content, start_url, screenshots)
     
-    # Step 5: Clean content with Gemini
-    print("=" * 80)
-    print("STEP 5: Cleaning content with Gemini")
-    print("=" * 80)
-    cleaned_content = await clean_content_with_gemini(all_content, start_url)
-    
-    # Save cleaned result
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(cleaned_content)
-    
-    print(f"Cleaned output saved to {output_file}")
-    print(f"Original length: {len(all_content)} characters")
-    print(f"Cleaned length: {len(cleaned_content)} characters")
-    print(f"Total pages: {len(crawled_results) + 1}")
+    # Save to file
+    filename = "agent_kb_output.md"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(clean_kb)
+        
+    return f"Knowledge base built successfully with {len(links)} sub-pages. Saved to {filename}."
 
 async def main():
-    # Example usage
-    start_url = "https://opn.gov.pl/aktualnosci"
-    await crawl_and_concatenate(start_url)
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        print("Error: GEMINI_API_KEY not found in .env")
+        return
+
+    deps = CrawlerDeps(api_key=api_key)
+    
+    user_request = "Build a comprehensive knowledge base from https://opn.gov.pl/aktualnosci"
+    print(f"User: {user_request}")
+    
+    try:
+        result = await kb_agent.run(user_request, deps=deps)
+        # Handle result based on object structure
+        if hasattr(result, 'data'):
+            print(f"\nAgent: {result.data}")
+        else:
+            print(f"\nAgent Response: {result}")
+    except Exception as e:
+        print(f"\nAn error occurred during agent run: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

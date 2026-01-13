@@ -1,3 +1,4 @@
 crawl4ai
-google-generativeai
+google-genai
+pydantic-ai
 python-dotenv
