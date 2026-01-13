@@ -1,0 +1,9 @@
+[
+    {
+        "url": "https://opn.gov.pl/aktualnosci",
+        "kb_prefix": "OPN_AKTUALNOSCI",
+        "local_name": "opn_aktualnosci",
+        "local_extension": "md",
+        "agent_ids" : ["agent_1801keq4vjk2enfaw74x0yqv1f2q"]
+    }
+]
