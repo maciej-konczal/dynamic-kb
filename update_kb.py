@@ -257,7 +257,7 @@ async def run_automation():
                 for kb_item in current_kb:
                     if kb_item.get("name", "").startswith(kb_prefix):
                         print(f"  Removing old KB document from agent list: {kb_item['name']} ({kb_item['id']})")
-                        docs_to_delete.add(kb_item['id'])
+                        # docs_to_delete.add(kb_item['id'])
                     else:
                         new_kb.append(kb_item)
                 
@@ -293,13 +293,13 @@ async def run_automation():
                 print(f"Error updating agent {agent_id}: {e}")
 
         # 6. Delete old documents from ElevenLabs
-        for old_doc_id in docs_to_delete:
-            print(f"Deleting old document from KB: {old_doc_id}")
-            try:
-                await el_client.delete_documentation(old_doc_id)
-                print(f"  Successfully deleted document {old_doc_id}")
-            except Exception as e:
-                print(f"  Error deleting document {old_doc_id}: {e}")
+        # for old_doc_id in docs_to_delete:
+        #     print(f"Deleting old document from KB: {old_doc_id}")
+        #     try:
+        #         await el_client.delete_documentation(old_doc_id)
+        #         print(f"  Successfully deleted document {old_doc_id}")
+        #     except Exception as e:
+        #         print(f"  Error deleting document {old_doc_id}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(run_automation())
