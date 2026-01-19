@@ -40,3 +40,9 @@ Thumbs.db
 
 # Output files
 concatenated_output.md
+*.md
+!README.md
+!CLAUDE.md
+
+# Data directory (runtime data)
+data/
