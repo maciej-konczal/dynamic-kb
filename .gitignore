@@ -43,6 +43,17 @@ concatenated_output.md
 *.md
 !README.md
 !CLAUDE.md
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
+!CHANGELOG.md
+!docs/**/*.md
+
+# Legacy scripts (kept locally for reference)
+main.py
+update_kb.py
+
+# Test/debug artifacts
+kb_config.json
 
 # Data directory (runtime data)
 data/

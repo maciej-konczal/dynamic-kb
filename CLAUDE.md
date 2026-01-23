@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-KB-Sync is a Python-based web scraping and knowledge base automation platform. It crawls websites, extracts content into clean markdown using AI, and syncs knowledge bases with ElevenLabs' ConvAI system for voice agent training. Features a Streamlit web UI for easy management.
+Dynamic-KB is a Python-based web scraping and knowledge base automation platform. It crawls websites, extracts content into clean markdown using AI, and syncs knowledge bases with ElevenLabs' ConvAI system for voice agent training. Features a Streamlit web UI for easy management.
 
 ## Commands
 
@@ -29,7 +29,7 @@ python main.py       # Pydantic AI prototype
 ## Architecture
 
 ```
-kb-sync/
+dynamic-kb/
 ├── app/
 │   ├── main.py              # Streamlit UI entry point
 │   ├── core/

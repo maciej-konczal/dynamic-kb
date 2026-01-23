@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  kb-sync:
+  dynamic-kb:
     build: .
-    container_name: kb-sync
+    container_name: dynamic-kb
     ports:
       - "8501:8501"
     environment:

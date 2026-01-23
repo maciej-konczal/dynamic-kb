@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Rounded square background -->
+  <rect x="2" y="2" width="28" height="28" rx="6" fill="#6366f1"/>
+  <!-- DK letters -->
+  <text x="4" y="23" font-family="system-ui, sans-serif" font-size="14" font-weight="bold" fill="white">DK</text>
+  <!-- Lightning bolt for "dynamic" -->
+  <path d="M24 8 L20 16 L23 16 L19 24 L23 16 L20 16 Z" fill="#fbbf24" stroke="#fbbf24" stroke-width="0.5"/>
+</svg>

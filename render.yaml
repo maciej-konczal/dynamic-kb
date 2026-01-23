@@ -1,0 +1,21 @@
+# Render Blueprint
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: dynamic-kb
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: streamlit run app/main.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: CONFIG_PATH
+        value: /app/config.yaml
+    disk:
+      name: dynamic-kb-data
+      mountPath: /app/data
+      sizeGB: 1
