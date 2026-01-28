@@ -1,4 +1,4 @@
-"""Core modules for KB-Sync."""
+"""Core modules for dynamic-kb."""
 
 from .scraper import Scraper
 from .ai_processor import AIProcessor

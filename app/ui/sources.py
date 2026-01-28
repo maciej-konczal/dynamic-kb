@@ -1,4 +1,4 @@
-"""Sources management page for KB-Sync Streamlit UI."""
+"""Sources management page for dynamic-kb Streamlit UI."""
 
 import streamlit as st
 import yaml

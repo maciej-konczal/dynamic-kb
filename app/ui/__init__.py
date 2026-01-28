@@ -1,1 +1,1 @@
-"""Streamlit UI components for KB-Sync."""
+"""Streamlit UI components for dynamic-kb."""

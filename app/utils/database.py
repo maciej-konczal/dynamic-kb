@@ -52,7 +52,7 @@ class ExecutionRecord:
 
 
 class Database:
-    """SQLite database manager for KB-Sync."""
+    """SQLite database manager for dynamic-kb."""
 
     def __init__(self, db_path: str = "data/kb_sync.db"):
         self.db_path = Path(db_path)

@@ -1,4 +1,4 @@
-"""Utility functions for KB-Sync."""
+"""Utility functions for dynamic-kb."""
 
 from .storage import Storage
 from .database import Database, ContentVersion, ContentDraft, ExecutionRecord

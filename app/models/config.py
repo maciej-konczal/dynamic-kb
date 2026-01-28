@@ -29,6 +29,7 @@ class ElevenLabsConfig(BaseModel):
     agent_ids: list[str] = Field(default_factory=list, description="List of agent IDs to update")
     kb_prefix: str = Field(description="Prefix for KB document names")
     remove_old_versions: bool = Field(default=True, description="Whether to remove old KB versions from agents")
+    trigger_rag_index: bool = Field(default=True, description="Whether to trigger RAG indexing after upload")
 
 
 class SourceConfig(BaseModel):

@@ -1,4 +1,4 @@
-"""Settings page for KB-Sync Streamlit UI."""
+"""Settings page for dynamic-kb Streamlit UI."""
 
 import os
 

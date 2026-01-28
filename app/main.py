@@ -1,4 +1,4 @@
-"""KB-Sync: Streamlit UI Entry Point.
+"""dynamic-kb: Streamlit UI Entry Point.
 
 Run with: streamlit run app/main.py
 """
@@ -22,7 +22,7 @@ from app.ui.settings import render_settings
 
 # Page configuration
 st.set_page_config(
-    page_title="KB-Sync",
+    page_title="dynamic-kb",
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -61,7 +61,7 @@ def main():
         st.session_state["elevenlabs_api_key"] = os.getenv("ELEVENLABS_API_KEY", "")
 
     # Sidebar navigation
-    st.sidebar.title("KB-Sync")
+    st.sidebar.title("dynamic-kb")
     st.sidebar.markdown("Knowledge Base Automation")
 
     page = st.sidebar.radio(

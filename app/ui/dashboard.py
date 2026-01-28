@@ -1,4 +1,4 @@
-"""Dashboard page for KB-Sync Streamlit UI."""
+"""Dashboard page for dynamic-kb Streamlit UI."""
 
 import asyncio
 from datetime import datetime
@@ -87,9 +87,10 @@ async def push_to_elevenlabs(
     doc_id = await el_client.create_kb_text(kb_name, content)
     st.write(f"Created KB document: {doc_id}")
 
-    # Trigger RAG indexing
-    st.write("Triggering RAG indexing...")
-    await el_client.trigger_rag_index(doc_id)
+    # Trigger RAG indexing if enabled
+    if source.elevenlabs.trigger_rag_index:
+        st.write("Triggering RAG indexing...")
+        await el_client.trigger_rag_index(doc_id)
 
     # Update agents
     new_doc = KBDocument(id=doc_id, name=kb_name)
@@ -142,7 +143,12 @@ def render_draft_card(draft: ContentDraft, config: AppConfig, storage: Storage, 
                 st.info(draft.diff_summary)
 
         with col2:
-            st.markdown("**Actions**")
+            if source and source.elevenlabs.agent_ids:
+                st.markdown("**Will update agents:**")
+                for agent_id in source.elevenlabs.agent_ids:
+                    st.caption(f"`{agent_id}`")
+            else:
+                st.markdown("**No agents configured**")
 
         # Preview expander
         with st.expander("Preview Content", expanded=False):
@@ -247,7 +253,7 @@ def render_draft_card(draft: ContentDraft, config: AppConfig, storage: Storage, 
 
 def render_dashboard(config: AppConfig, storage: Storage):
     """Render the dashboard page."""
-    st.title("KB-Sync Dashboard")
+    st.title("dynamic-kb Dashboard")
     st.markdown("Knowledge Base Automation for ElevenLabs Voice Agents")
 
     # API Keys from session state
@@ -269,9 +275,14 @@ def render_dashboard(config: AppConfig, storage: Storage):
     with col3:
         st.metric("Pending Drafts", len(pending_drafts))
     with col4:
-        history = storage.get_history(limit=10)
+        history = storage.get_history()
+        total = len(history)
         success_count = len([h for h in history if h.status == "success"])
-        st.metric("Recent Successes", f"{success_count}/10")
+        if total > 0:
+            percentage = int((success_count / total) * 100)
+            st.metric("Success Rate", f"{percentage}%", help=f"{success_count}/{total} successful")
+        else:
+            st.metric("Success Rate", "N/A")
 
     st.divider()
 

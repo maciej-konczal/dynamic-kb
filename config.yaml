@@ -1,4 +1,4 @@
-# KB-Sync Configuration
+# dynamic-kb Configuration
 # Knowledge Base Automation for ElevenLabs Voice Agents
 
 sources:
@@ -42,6 +42,7 @@ sources:
         - "agent_1801keq4vjk2enfaw74x0yqv1f2q"
       kb_prefix: "OPN_AKTUALNOSCI"
       remove_old_versions: true
+      trigger_rag_index: true
 
 settings:
   ai_provider: "gemini"

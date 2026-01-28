@@ -1,4 +1,4 @@
-"""Execution history and version management page for KB-Sync Streamlit UI."""
+"""Execution history and version management page for dynamic-kb Streamlit UI."""
 
 import streamlit as st
 
