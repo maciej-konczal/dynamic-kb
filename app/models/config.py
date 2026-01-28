@@ -14,6 +14,7 @@ class ScrapingConfig(BaseModel):
     max_pages: int = Field(default=5, ge=1, le=20, description="Maximum number of pages to crawl")
     url_pattern: Optional[str] = Field(default=None, description="Regex pattern to filter URLs")
     capture_screenshots: bool = Field(default=True, description="Whether to capture page screenshots")
+    include_urls: list[str] = Field(default_factory=list, description="URLs to always include (crawled first)")
 
 
 class PromptsConfig(BaseModel):

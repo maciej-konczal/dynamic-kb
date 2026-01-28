@@ -14,6 +14,8 @@ sources:
       max_pages: 5
       url_pattern: "^https://example\\.com/news"
       capture_screenshots: true
+      include_urls:
+        - "https://example.com/important-page"  # Always crawl these URLs first
     prompts:
       # Custom prompts (optional - defaults are used if not specified)
       link_extraction: |

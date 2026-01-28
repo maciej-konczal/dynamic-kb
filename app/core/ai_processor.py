@@ -69,11 +69,17 @@ Markdown Content:
 
             links = []
             if response.text:
+                # Extract domain from start_url for filtering
+                from urllib.parse import urlparse
+                parsed = urlparse(start_url)
+                domain_base = f"{parsed.scheme}://{parsed.netloc}"
+
                 # Robustly extract URLs from response
                 found_urls = re.findall(r'https?://[^\s\)\]`"]+', response.text)
                 for url in found_urls:
                     url = url.strip().strip('*').strip('-').strip().rstrip('.')
-                    if url.startswith(start_url) and url != start_url:
+                    # Accept any URL from the same domain
+                    if url.startswith(domain_base) and url != start_url:
                         links.append(url)
 
             return list(set(links))

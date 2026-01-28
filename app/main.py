@@ -87,6 +87,11 @@ def main():
     else:
         st.sidebar.markdown(" ElevenLabs: Not configured")
 
+    if os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"):
+        st.sidebar.markdown(" Supabase: Connected")
+    else:
+        st.sidebar.markdown(" Supabase: Using SQLite")
+
     st.sidebar.divider()
     st.sidebar.markdown(
         "Made with [crawl4ai](https://github.com/unclecode/crawl4ai) & "

@@ -42,15 +42,19 @@ async def scrape_source(
 
     # Step 2: Extract links
     st.write("Extracting sub-page links...")
-    links = await ai_processor.extract_links(
+    ai_links = await ai_processor.extract_links(
         initial_result.markdown,
         str(source.url),
     )
-    st.write(f"Found {len(links)} sub-pages")
+
+    # Merge with include_urls (priority URLs come first)
+    include_urls = source.scraping.include_urls or []
+    all_links = list(dict.fromkeys(include_urls + ai_links))  # Dedupe, preserve order
+    st.write(f"Found {len(ai_links)} AI-extracted + {len(include_urls)} priority URLs = {len(all_links)} total")
 
     # Step 3: Crawl sub-pages
     st.write("Crawling sub-pages...")
-    results = await scraper.crawl_with_subpages(str(source.url), links)
+    results = await scraper.crawl_with_subpages(str(source.url), all_links)
     combined_content, screenshots = scraper.combine_results(results)
 
     # Step 4: Clean content
