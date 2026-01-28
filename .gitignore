@@ -46,7 +46,9 @@ concatenated_output.md
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
 !CHANGELOG.md
+!SECURITY.md
 !docs/**/*.md
+!.github/**/*.md
 
 # Legacy scripts (kept locally for reference)
 main.py

@@ -9,9 +9,6 @@
 
 Dynamic-KB automatically crawls websites, extracts and cleans content using AI, and syncs knowledge bases with ElevenLabs voice agents. Perfect for keeping your AI assistants up-to-date with the latest information.
 
-![Dynamic-KB Dashboard](docs/screenshot-dashboard.png)
-*Dashboard showing sources, pending drafts, and execution status*
-
 ## Features
 
 - **Web Scraping** - Crawl websites with configurable depth using [crawl4ai](https://github.com/unclecode/crawl4ai)
@@ -196,17 +193,6 @@ SUPABASE_KEY=your_supabase_publishable_key
 ```
 
 The app automatically uses Supabase when these variables are set.
-
-## Screenshots
-
-### Dashboard
-![Dashboard](docs/screenshot-dashboard.png)
-
-### Draft Review
-![Draft Review](docs/screenshot-draft.png)
-
-### Version History
-![History](docs/screenshot-history.png)
 
 ## Architecture
 

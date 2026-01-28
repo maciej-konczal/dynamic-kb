@@ -2,14 +2,14 @@
 # Knowledge Base Automation for ElevenLabs Voice Agents
 
 sources:
-  - name: "OPN News"
-    url: "https://opn.gov.pl/aktualnosci"
+  - name: "Example News"
+    url: "https://example.com/news"
     enabled: true
     schedule: "0 8 * * *"  # Daily at 8am (informational, for external scheduler)
     scraping:
       max_depth: 1
       max_pages: 5
-      url_pattern: "^https://opn\\.gov\\.pl/aktualnosci"
+      url_pattern: "^https://example\\.com/news"
       capture_screenshots: true
     prompts:
       # Custom prompts (optional - defaults are used if not specified)
@@ -33,14 +33,13 @@ sources:
         4. Organize logically by topic.
         5. Keep only substantive, unique information.
         6. Format as clean markdown suitable for a voice assistant knowledge base.
-        7. Write in Polish language as this is for a Polish national park assistant.
 
         Markdown Content:
         {content}
     elevenlabs:
       agent_ids:
-        - "agent_1801keq4vjk2enfaw74x0yqv1f2q"
-      kb_prefix: "OPN_AKTUALNOSCI"
+        - "agent_your_agent_id_here"
+      kb_prefix: "EXAMPLE_NEWS"
       remove_old_versions: true
       trigger_rag_index: true
 
