@@ -1,14 +1,29 @@
-"""File and state management utilities with SQLite backend."""
+"""File and state management utilities with database backend."""
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from app.utils.database import Database, ContentVersion, ContentDraft, ExecutionRecord
+from app.utils.database import (
+    Database,
+    DatabaseProtocol,
+    ContentVersion,
+    ContentDraft,
+    ExecutionRecord,
+)
+
+
+def _create_database(data_dir: Path) -> DatabaseProtocol:
+    """Create the appropriate database backend based on environment variables."""
+    if os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"):
+        from app.utils.supabase_db import SupabaseDatabase
+        return SupabaseDatabase()
+    return Database(str(data_dir / "kb_sync.db"))
 
 
 class Storage:
-    """Handles file and state persistence using SQLite."""
+    """Handles file and state persistence using database backend."""
 
     def __init__(self, data_dir: str = "data"):
         self.data_dir = Path(data_dir)
@@ -18,8 +33,8 @@ class Storage:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.outputs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize database
-        self.db = Database(str(self.data_dir / "kb_sync.db"))
+        # Initialize database (SQLite or Supabase based on env vars)
+        self.db: DatabaseProtocol = _create_database(self.data_dir)
 
     # Content Versions
     def get_latest_version(self, source_name: str) -> Optional[ContentVersion]:

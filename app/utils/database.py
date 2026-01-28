@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable
 from dataclasses import dataclass
 
 
@@ -49,6 +49,65 @@ class ExecutionRecord:
     error: Optional[str] = None
     diff_summary: Optional[str] = None
     version_id: Optional[int] = None
+
+
+@runtime_checkable
+class DatabaseProtocol(Protocol):
+    """Protocol defining the database interface."""
+
+    def save_version(
+        self,
+        source_name: str,
+        content: str,
+        content_hash: str,
+        doc_id: Optional[str] = None,
+    ) -> ContentVersion: ...
+
+    def get_latest_version(self, source_name: str) -> Optional[ContentVersion]: ...
+
+    def get_versions(self, source_name: str, limit: int = 10) -> list[ContentVersion]: ...
+
+    def get_version_by_id(self, version_id: int) -> Optional[ContentVersion]: ...
+
+    def update_version_doc_id(self, version_id: int, doc_id: str) -> None: ...
+
+    def create_draft(
+        self,
+        source_name: str,
+        content: str,
+        content_hash: str,
+        diff_summary: Optional[str] = None,
+        previous_version_id: Optional[int] = None,
+    ) -> ContentDraft: ...
+
+    def get_pending_drafts(self, source_name: Optional[str] = None) -> list[ContentDraft]: ...
+
+    def get_draft_by_id(self, draft_id: int) -> Optional[ContentDraft]: ...
+
+    def update_draft_status(self, draft_id: int, status: str) -> None: ...
+
+    def add_execution(
+        self,
+        source_name: str,
+        status: str,
+        content_hash: Optional[str] = None,
+        doc_id: Optional[str] = None,
+        error: Optional[str] = None,
+        diff_summary: Optional[str] = None,
+        version_id: Optional[int] = None,
+    ) -> ExecutionRecord: ...
+
+    def get_history(
+        self,
+        source_name: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[ExecutionRecord]: ...
+
+    def get_last_execution(self, source_name: str) -> Optional[ExecutionRecord]: ...
+
+    def cleanup_old_versions(self, source_name: str, keep: int = 10) -> int: ...
+
+    def cleanup_old_drafts(self, days: int = 7) -> int: ...
 
 
 class Database:

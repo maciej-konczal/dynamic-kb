@@ -129,6 +129,73 @@ settings:
 | `GEMINI_API_KEY` | Google Gemini API key | Yes |
 | `ELEVENLABS_API_KEY` | ElevenLabs API key | Yes |
 | `CONFIG_PATH` | Path to config.yaml | No |
+| `SUPABASE_URL` | Supabase project URL | No |
+| `SUPABASE_KEY` | Supabase Publishable key | No |
+
+### Database Options
+
+By default, Dynamic-KB uses **SQLite** for local storage. For cloud deployments or shared access, you can use **Supabase**.
+
+#### Local (SQLite - Default)
+No configuration needed. Data is stored in `data/kb_sync.db`.
+
+#### Cloud (Supabase)
+1. Create a project at [supabase.com](https://supabase.com)
+2. Run the following SQL in the Supabase SQL Editor:
+
+```sql
+-- content_versions table
+CREATE TABLE content_versions (
+    id SERIAL PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    doc_id TEXT,
+    pushed_at TIMESTAMPTZ,
+    version_number INTEGER DEFAULT 1,
+    UNIQUE(source_name, content_hash)
+);
+
+-- content_drafts table
+CREATE TABLE content_drafts (
+    id SERIAL PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status TEXT DEFAULT 'pending',
+    diff_summary TEXT,
+    previous_version_id INTEGER REFERENCES content_versions(id)
+);
+
+-- execution_history table
+CREATE TABLE execution_history (
+    id SERIAL PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status TEXT NOT NULL,
+    content_hash TEXT,
+    doc_id TEXT,
+    error TEXT,
+    diff_summary TEXT,
+    version_id INTEGER REFERENCES content_versions(id)
+);
+
+-- Indexes for performance
+CREATE INDEX idx_versions_source ON content_versions(source_name);
+CREATE INDEX idx_drafts_source ON content_drafts(source_name);
+CREATE INDEX idx_drafts_status ON content_drafts(status);
+CREATE INDEX idx_history_source ON execution_history(source_name);
+```
+
+3. Copy your credentials from Project Settings → API and add to `.env`:
+```
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your_supabase_publishable_key
+```
+
+The app automatically uses Supabase when these variables are set.
 
 ## Screenshots
 
