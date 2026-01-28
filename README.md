@@ -53,7 +53,8 @@ playwright install chromium
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your API keys
+cp config.example.yaml config.yaml
+# Edit .env with your API keys and config.yaml with your sources
 ```
 
 ### Run

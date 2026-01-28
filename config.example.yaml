@@ -1,0 +1,55 @@
+# dynamic-kb Configuration
+# Knowledge Base Automation for ElevenLabs Voice Agents
+#
+# Copy this file to config.yaml and customize for your use case:
+#   cp config.example.yaml config.yaml
+
+sources:
+  - name: "Example News"
+    url: "https://example.com/news"
+    enabled: true
+    schedule: "0 8 * * *"  # Daily at 8am (informational, for external scheduler)
+    scraping:
+      max_depth: 1
+      max_pages: 5
+      url_pattern: "^https://example\\.com/news"
+      capture_screenshots: true
+    prompts:
+      # Custom prompts (optional - defaults are used if not specified)
+      link_extraction: |
+        Analyze the markdown and extract ONLY URLs that are sub-pages of {start_url}.
+        Requirements:
+        - Return ONLY absolute URLs, one per line.
+        - No markdown formatting (no backticks, no brackets).
+        - No extra text or explanations.
+        - The URLs must start with {start_url}
+
+        Markdown:
+        {content}
+      content_cleaning: |
+        Clean and synthesize the following crawled content from {start_url}.
+
+        CRITICAL INSTRUCTIONS:
+        1. If you see images/screenshots provided, extract ANY information, text, or data present in those images that isn't in the markdown.
+        2. Remove navigation, footers, and repetitive boilerplate.
+        3. Merge duplicate information.
+        4. Organize logically by topic.
+        5. Keep only substantive, unique information.
+        6. Format as clean markdown suitable for a voice assistant knowledge base.
+
+        Markdown Content:
+        {content}
+    elevenlabs:
+      agent_ids:
+        - "agent_your_agent_id_here"
+      kb_prefix: "EXAMPLE_NEWS"
+      remove_old_versions: true
+      trigger_rag_index: true
+
+settings:
+  ai_provider: "gemini"
+  gemini_model: "gemini-2.5-flash"
+  change_detection: true
+  dry_run: false
+  data_dir: "data"
+  output_dir: "data/outputs"
