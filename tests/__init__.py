@@ -1,1 +1,1 @@
-"""Tests for Dynamic-KB."""
+"""Unit tests for dynamic-kb."""

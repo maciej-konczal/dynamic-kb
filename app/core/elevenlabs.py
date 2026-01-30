@@ -5,6 +5,11 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.core.logging import get_logger
+from app.core.exceptions import ElevenLabsError
+
+logger = get_logger("elevenlabs")
+
 
 @dataclass
 class KBDocument:
@@ -41,6 +46,7 @@ class ElevenLabsClient:
 
         for attempt in range(self.max_retries):
             try:
+                logger.debug(f"Request: {method} {endpoint} (attempt {attempt + 1})")
                 async with httpx.AsyncClient() as client:
                     response = await client.request(
                         method=method,
@@ -57,25 +63,32 @@ class ElevenLabsClient:
                     return response.json()
             except httpx.HTTPStatusError as e:
                 last_error = e
-                if e.response.status_code >= 500:
+                status_code = e.response.status_code
+                if status_code >= 500:
+                    logger.warning(f"Server error ({status_code}), retrying...")
                     continue  # Retry on server errors
-                raise
+                logger.error(f"HTTP error: {status_code} - {e.response.text}")
+                raise ElevenLabsError(f"ElevenLabs API error ({status_code}): {e.response.text}") from e
             except httpx.RequestError as e:
                 last_error = e
+                logger.warning(f"Request error (attempt {attempt + 1}): {e}")
                 if attempt < self.max_retries - 1:
                     continue
-                raise
+                raise ElevenLabsError(f"ElevenLabs request failed: {e}") from e
 
-        raise last_error or Exception("Request failed after retries")
+        raise ElevenLabsError(f"ElevenLabs request failed after {self.max_retries} retries: {last_error}")
 
     async def create_kb_text(self, name: str, text: str) -> str:
         """Upload text to ElevenLabs KB and return the document ID."""
+        logger.info(f"Creating KB document: {name}")
         data = await self._request(
             method="POST",
             endpoint="knowledge-base/text",
             json={"text": text, "name": name},
         )
-        return data["id"]
+        doc_id = data["id"]
+        logger.info(f"Created KB document: {doc_id}")
+        return doc_id
 
     async def trigger_rag_index(
         self,
@@ -83,14 +96,18 @@ class ElevenLabsClient:
         model: str = "e5_mistral_7b_instruct",
     ) -> dict:
         """Trigger RAG indexing for a document."""
-        return await self._request(
+        logger.info(f"Triggering RAG indexing for document: {documentation_id}")
+        result = await self._request(
             method="POST",
             endpoint=f"knowledge-base/{documentation_id}/rag-index",
             json={"model": model},
         )
+        logger.info(f"RAG indexing triggered for: {documentation_id}")
+        return result
 
     async def get_kb_document(self, documentation_id: str) -> dict:
         """Get details of a knowledge base document."""
+        logger.debug(f"Getting KB document: {documentation_id}")
         return await self._request(
             method="GET",
             endpoint=f"knowledge-base/{documentation_id}",
@@ -98,6 +115,7 @@ class ElevenLabsClient:
 
     async def list_kb_documents(self) -> list[dict]:
         """List all knowledge base documents."""
+        logger.debug("Listing KB documents")
         data = await self._request(
             method="GET",
             endpoint="knowledge-base",
@@ -106,20 +124,34 @@ class ElevenLabsClient:
 
     async def delete_kb_document(self, documentation_id: str) -> dict:
         """Delete a knowledge base document."""
-        return await self._request(
+        logger.info(f"Deleting KB document: {documentation_id}")
+        result = await self._request(
             method="DELETE",
             endpoint=f"knowledge-base/{documentation_id}",
         )
+        logger.info(f"Deleted KB document: {documentation_id}")
+        return result
 
     async def get_agent(self, agent_id: str) -> dict:
         """Get agent configuration."""
+        logger.debug(f"Getting agent: {agent_id}")
         return await self._request(
             method="GET",
             endpoint=f"agents/{agent_id}",
         )
 
+    async def list_agents(self) -> list[dict]:
+        """List all agents (lightweight call for API validation)."""
+        logger.debug("Listing agents")
+        data = await self._request(
+            method="GET",
+            endpoint="agents",
+        )
+        return data.get("agents", [])
+
     async def patch_agent(self, agent_id: str, payload: dict) -> dict:
         """Update agent configuration."""
+        logger.info(f"Updating agent: {agent_id}")
         return await self._request(
             method="PATCH",
             endpoint=f"agents/{agent_id}",
@@ -165,6 +197,7 @@ class ElevenLabsClient:
             for kb_item in current_kb:
                 if remove_old and kb_item.get("name", "").startswith(kb_prefix):
                     removed_docs.append(kb_item["id"])
+                    logger.info(f"Removing old KB document: {kb_item['id']}")
                 else:
                     new_kb.append(kb_item)
 
@@ -195,8 +228,11 @@ class ElevenLabsClient:
                 }
 
             await self.patch_agent(agent_id, patch_payload)
+            logger.info(f"Updated agent {agent_id} with new KB document: {new_doc.id}")
             return removed_docs, True
 
+        except ElevenLabsError:
+            raise
         except Exception as e:
-            print(f"[ElevenLabs] Error updating agent {agent_id}: {e}")
-            return [], False
+            logger.error(f"Error updating agent {agent_id}: {e}")
+            raise ElevenLabsError(f"Failed to update agent {agent_id}: {e}") from e

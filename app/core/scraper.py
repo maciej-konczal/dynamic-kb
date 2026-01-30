@@ -6,6 +6,11 @@ from dataclasses import dataclass
 
 from crawl4ai import AsyncWebCrawler
 
+from app.core.logging import get_logger
+from app.core.exceptions import ScraperError
+
+logger = get_logger("scraper")
+
 
 @dataclass
 class CrawlResult:
@@ -27,11 +32,13 @@ class Scraper:
         max_pages: int = 5,
         url_pattern: Optional[str] = None,
         capture_screenshots: bool = True,
+        timeout: float = 30.0,
     ):
         self.max_depth = max_depth
         self.max_pages = max_pages
         self.url_pattern = url_pattern
         self.capture_screenshots = capture_screenshots
+        self.timeout = timeout
         self._compiled_pattern = re.compile(url_pattern) if url_pattern else None
 
     def matches_pattern(self, url: str) -> bool:
@@ -42,12 +49,15 @@ class Scraper:
 
     async def crawl_url(self, url: str) -> CrawlResult:
         """Crawl a single URL and return markdown content with optional screenshot."""
+        logger.info(f"Crawling URL: {url}")
         async with AsyncWebCrawler() as crawler:
             try:
                 result = await crawler.arun(
                     url=url,
                     screenshot=self.capture_screenshots,
+                    page_timeout=int(self.timeout * 1000),
                 )
+                logger.info(f"Successfully crawled: {url}")
                 return CrawlResult(
                     url=url,
                     markdown=result.markdown if result.markdown else "",
@@ -55,6 +65,7 @@ class Scraper:
                     success=True,
                 )
             except Exception as e:
+                logger.error(f"Failed to crawl {url}: {e}")
                 return CrawlResult(
                     url=url,
                     markdown="",
@@ -75,6 +86,9 @@ class Scraper:
         initial_result = await self.crawl_url(start_url)
         results.append(initial_result)
 
+        if not initial_result.success:
+            raise ScraperError(f"Failed to crawl initial page: {initial_result.error}")
+
         # Filter subpages by pattern and limit
         valid_subpages = [
             url for url in subpage_urls
@@ -83,11 +97,15 @@ class Scraper:
 
         # Limit to max_pages - 1 (since we already have the initial page)
         subpages_to_crawl = valid_subpages[: self.max_pages - 1]
+        logger.info(f"Crawling {len(subpages_to_crawl)} subpages (max: {self.max_pages - 1})")
 
         # Crawl subpages
         for url in subpages_to_crawl:
             result = await self.crawl_url(url)
             results.append(result)
+
+        successful = sum(1 for r in results if r.success)
+        logger.info(f"Crawl complete: {successful}/{len(results)} pages successful")
 
         return results
 

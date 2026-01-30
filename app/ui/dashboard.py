@@ -12,6 +12,7 @@ from app.core.scraper import Scraper
 from app.core.ai_processor import AIProcessor
 from app.core.elevenlabs import ElevenLabsClient, KBDocument
 from app.core.differ import ContentDiffer
+from app.core.exceptions import ScraperError, AIProcessorError, ElevenLabsError
 
 
 async def scrape_source(
@@ -38,7 +39,7 @@ async def scrape_source(
     st.write(f"Crawling {source.url}...")
     initial_result = await scraper.crawl_url(str(source.url))
     if not initial_result.success:
-        raise Exception(f"Failed to crawl: {initial_result.error}")
+        raise ScraperError(f"Failed to crawl: {initial_result.error}")
 
     # Step 2: Extract links
     st.write("Extracting sub-page links...")
@@ -216,6 +217,15 @@ def render_draft_card(draft: ContentDraft, config: AppConfig, storage: Storage, 
                                     version_id=version.id,
                                 )
                                 st.success(f"Pushed to ElevenLabs! Doc ID: {doc_id}")
+                            except ElevenLabsError as e:
+                                storage.add_execution(
+                                    source_name=draft.source_name,
+                                    status="failed",
+                                    content_hash=draft.content_hash,
+                                    error=str(e),
+                                    version_id=version.id,
+                                )
+                                st.error(f"ElevenLabs error: {e}")
                             except Exception as e:
                                 storage.add_execution(
                                     source_name=draft.source_name,
@@ -224,7 +234,7 @@ def render_draft_card(draft: ContentDraft, config: AppConfig, storage: Storage, 
                                     error=str(e),
                                     version_id=version.id,
                                 )
-                                st.error(f"Push failed: {e}")
+                                st.error(f"Unexpected error: {e}")
                         st.rerun()
 
         with col2:
@@ -364,13 +374,27 @@ def render_dashboard(config: AppConfig, storage: Storage):
                                     )
                                     st.success("Draft created! Review above.")
 
+                            except ScraperError as e:
+                                storage.add_execution(
+                                    source_name=source.name,
+                                    status="failed",
+                                    error=str(e),
+                                )
+                                st.error(f"Scraping error: {e}")
+                            except AIProcessorError as e:
+                                storage.add_execution(
+                                    source_name=source.name,
+                                    status="failed",
+                                    error=str(e),
+                                )
+                                st.error(f"AI processing error: {e}")
                             except Exception as e:
                                 storage.add_execution(
                                     source_name=source.name,
                                     status="failed",
                                     error=str(e),
                                 )
-                                st.error(f"Failed: {e}")
+                                st.error(f"Unexpected error: {e}")
 
                             st.rerun()
 
@@ -418,11 +442,17 @@ def render_dashboard(config: AppConfig, storage: Storage):
                                 content_hash=content_hash,
                             )
 
-                    except Exception as e:
+                    except (ScraperError, AIProcessorError) as e:
                         storage.add_execution(
                             source_name=source.name,
                             status="failed",
                             error=str(e),
+                        )
+                    except Exception as e:
+                        storage.add_execution(
+                            source_name=source.name,
+                            status="failed",
+                            error=f"Unexpected: {e}",
                         )
 
                     progress_bar.progress((i + 1) / len(enabled_sources))
@@ -454,11 +484,17 @@ def render_dashboard(config: AppConfig, storage: Storage):
                                     doc_id=doc_id,
                                     version_id=version.id,
                                 )
-                            except Exception as e:
+                            except ElevenLabsError as e:
                                 storage.add_execution(
                                     source_name=draft.source_name,
                                     status="failed",
                                     error=str(e),
+                                )
+                            except Exception as e:
+                                storage.add_execution(
+                                    source_name=draft.source_name,
+                                    status="failed",
+                                    error=f"Unexpected: {e}",
                                 )
                 st.success("All drafts processed!")
                 st.rerun()

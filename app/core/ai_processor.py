@@ -1,11 +1,17 @@
 """AI content processing module using Google Gemini."""
 
+import asyncio
 import re
 import base64
 from typing import Optional
 
 from google import genai
 from google.genai import types
+
+from app.core.logging import get_logger
+from app.core.exceptions import AIProcessorError
+
+logger = get_logger("ai_processor")
 
 
 class AIProcessor:
@@ -36,17 +42,69 @@ Markdown Content:
 {content}
 """
 
+    # Error types that should not be retried
+    NON_RETRYABLE_ERRORS = (
+        "quota",
+        "authentication",
+        "unauthorized",
+        "api_key",
+        "permission",
+        "invalid_api_key",
+        "403",
+        "401",
+        "429",  # Rate limit - could retry but with longer backoff
+    )
+
     def __init__(
         self,
         api_key: str,
         model: str = "gemini-2.5-flash",
         link_extraction_prompt: Optional[str] = None,
         content_cleaning_prompt: Optional[str] = None,
+        timeout: float = 60.0,
+        max_retries: int = 3,
     ):
         self.client = genai.Client(api_key=api_key)
         self.model = model
         self.link_extraction_prompt = link_extraction_prompt or self.DEFAULT_LINK_EXTRACTION_PROMPT
         self.content_cleaning_prompt = content_cleaning_prompt or self.DEFAULT_CONTENT_CLEANING_PROMPT
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    def _is_retryable_error(self, error: Exception) -> bool:
+        """Check if an error should be retried."""
+        error_str = str(error).lower()
+        for non_retryable in self.NON_RETRYABLE_ERRORS:
+            if non_retryable in error_str:
+                return False
+        return True
+
+    async def _call_with_retry(self, func, *args, **kwargs):
+        """Call a function with retry logic and exponential backoff."""
+        last_error = None
+
+        for attempt in range(self.max_retries):
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(func, *args, **kwargs),
+                    timeout=self.timeout,
+                )
+            except asyncio.TimeoutError:
+                last_error = AIProcessorError(f"Request timed out after {self.timeout}s")
+                logger.warning(f"Attempt {attempt + 1}/{self.max_retries} timed out")
+            except Exception as e:
+                last_error = e
+                if not self._is_retryable_error(e):
+                    logger.error(f"Non-retryable error: {e}")
+                    raise AIProcessorError(f"AI processing failed: {e}") from e
+                logger.warning(f"Attempt {attempt + 1}/{self.max_retries} failed: {e}")
+
+            if attempt < self.max_retries - 1:
+                backoff = 2 ** attempt  # 1s, 2s, 4s
+                logger.info(f"Retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
+
+        raise AIProcessorError(f"AI processing failed after {self.max_retries} attempts: {last_error}")
 
     async def extract_links(
         self,
@@ -61,8 +119,11 @@ Markdown Content:
             content=markdown[:50000],  # Limit content size
         )
 
+        logger.info(f"Extracting links from content for {start_url}")
+
         try:
-            response = self.client.models.generate_content(
+            response = await self._call_with_retry(
+                self.client.models.generate_content,
                 model=self.model,
                 contents=prompt,
             )
@@ -82,10 +143,14 @@ Markdown Content:
                     if url.startswith(domain_base) and url != start_url:
                         links.append(url)
 
-            return list(set(links))
+            unique_links = list(set(links))
+            logger.info(f"Extracted {len(unique_links)} unique links")
+            return unique_links
+        except AIProcessorError:
+            raise
         except Exception as e:
-            print(f"[AIProcessor] Error extracting links: {e}")
-            return []
+            logger.error(f"Error extracting links: {e}")
+            raise AIProcessorError(f"Failed to extract links: {e}") from e
 
     async def clean_content(
         self,
@@ -106,6 +171,7 @@ Markdown Content:
 
         # Add screenshots if available (limit to 3 for token management)
         if screenshots:
+            logger.info(f"Including {min(len(screenshots), 3)} screenshots in content cleaning")
             for b64_img in screenshots[:3]:
                 try:
                     contents.append(
@@ -115,14 +181,21 @@ Markdown Content:
                         )
                     )
                 except Exception as e:
-                    print(f"[AIProcessor] Error processing screenshot: {e}")
+                    logger.warning(f"Error processing screenshot: {e}")
+
+        logger.info(f"Cleaning content for {start_url}")
 
         try:
-            response = self.client.models.generate_content(
+            response = await self._call_with_retry(
+                self.client.models.generate_content,
                 model=self.model,
                 contents=contents,
             )
-            return response.text if response.text else "Failed to clean content."
+            result = response.text if response.text else "Failed to clean content."
+            logger.info(f"Content cleaned successfully ({len(result)} chars)")
+            return result
+        except AIProcessorError:
+            raise
         except Exception as e:
-            print(f"[AIProcessor] Error cleaning content: {e}")
-            return content[:50000]  # Return truncated raw content as fallback
+            logger.error(f"Error cleaning content: {e}")
+            raise AIProcessorError(f"Failed to clean content: {e}") from e
