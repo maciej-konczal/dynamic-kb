@@ -19,6 +19,7 @@ from app.ui.dashboard import render_dashboard
 from app.ui.sources import render_sources
 from app.ui.history import render_history
 from app.ui.settings import render_settings
+from app.ui.health import render_health_page
 from app.core.logging import get_logger
 
 logger = get_logger("main")
@@ -165,7 +166,7 @@ def main():
 
     page = st.sidebar.radio(
         "Navigation",
-        options=["Dashboard", "Sources", "History", "Settings"],
+        options=["Dashboard", "Sources", "History", "Settings", "Health"],
         index=0,
     )
 
@@ -218,6 +219,8 @@ def main():
         render_history(config, storage)
     elif page == "Settings":
         render_settings(config, config_path)
+    elif page == "Health":
+        render_health_page()
 
 
 if __name__ == "__main__":

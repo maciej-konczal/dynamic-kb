@@ -1,8 +1,9 @@
 """SQLite database for content storage and versioning."""
 
+import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 from dataclasses import dataclass
@@ -49,6 +50,17 @@ class ExecutionRecord:
     error: Optional[str] = None
     diff_summary: Optional[str] = None
     version_id: Optional[int] = None
+
+
+@dataclass
+class MetricEvent:
+    """A single metric event for persistence."""
+
+    id: int
+    timestamp: str
+    metric_name: str
+    metric_value: float
+    labels: dict  # JSON object with label key-values
 
 
 @runtime_checkable
@@ -108,6 +120,33 @@ class DatabaseProtocol(Protocol):
     def cleanup_old_versions(self, source_name: str, keep: int = 10) -> int: ...
 
     def cleanup_old_drafts(self, days: int = 7) -> int: ...
+
+    # Metrics
+    def save_metric(
+        self,
+        metric_name: str,
+        metric_value: float,
+        labels: Optional[dict] = None,
+    ) -> MetricEvent: ...
+
+    def get_metrics(
+        self,
+        metric_name: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+        limit: int = 1000,
+    ) -> list[MetricEvent]: ...
+
+    def get_metric_summary(
+        self,
+        metric_name: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+    ) -> dict: ...
+
+    def cleanup_old_metrics(self, days: int = 30) -> int: ...
 
 
 class Database:
@@ -174,6 +213,17 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_drafts_source ON content_drafts(source_name);
                 CREATE INDEX IF NOT EXISTS idx_drafts_status ON content_drafts(status);
                 CREATE INDEX IF NOT EXISTS idx_history_source ON execution_history(source_name);
+
+                CREATE TABLE IF NOT EXISTS metrics_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    metric_name TEXT NOT NULL,
+                    metric_value REAL NOT NULL,
+                    labels TEXT DEFAULT '{}'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics_events(metric_name);
+                CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics_events(timestamp);
             """)
 
     # Content Versions
@@ -436,6 +486,124 @@ class Database:
                 """DELETE FROM content_drafts
                    WHERE status != 'pending'
                    AND datetime(created_at) < datetime('now', ?)""",
+                (f'-{days} days',)
+            )
+            return cursor.rowcount
+
+    # Metrics
+    def save_metric(
+        self,
+        metric_name: str,
+        metric_value: float,
+        labels: Optional[dict] = None,
+    ) -> MetricEvent:
+        """Save a metric event."""
+        now = datetime.now(timezone.utc).isoformat()
+        labels_json = json.dumps(labels or {})
+
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """INSERT INTO metrics_events (timestamp, metric_name, metric_value, labels)
+                   VALUES (?, ?, ?, ?)""",
+                (now, metric_name, metric_value, labels_json)
+            )
+
+            return MetricEvent(
+                id=cursor.lastrowid,
+                timestamp=now,
+                metric_name=metric_name,
+                metric_value=metric_value,
+                labels=labels or {},
+            )
+
+    def get_metrics(
+        self,
+        metric_name: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+        limit: int = 1000,
+    ) -> list[MetricEvent]:
+        """Get metric events with optional filtering."""
+        with self._get_conn() as conn:
+            query = "SELECT * FROM metrics_events WHERE 1=1"
+            params = []
+
+            if metric_name:
+                query += " AND metric_name = ?"
+                params.append(metric_name)
+
+            if start_time:
+                query += " AND timestamp >= ?"
+                params.append(start_time)
+
+            if end_time:
+                query += " AND timestamp <= ?"
+                params.append(end_time)
+
+            query += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(query, params).fetchall()
+
+            results = []
+            for row in rows:
+                row_dict = dict(row)
+                row_dict["labels"] = json.loads(row_dict.get("labels", "{}"))
+                # Filter by labels if specified
+                if labels:
+                    if all(row_dict["labels"].get(k) == v for k, v in labels.items()):
+                        results.append(MetricEvent(**row_dict))
+                else:
+                    results.append(MetricEvent(**row_dict))
+
+            return results
+
+    def get_metric_summary(
+        self,
+        metric_name: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+    ) -> dict:
+        """Get summary statistics for a metric."""
+        with self._get_conn() as conn:
+            query = """
+                SELECT
+                    COUNT(*) as count,
+                    SUM(metric_value) as total,
+                    AVG(metric_value) as avg,
+                    MIN(metric_value) as min,
+                    MAX(metric_value) as max
+                FROM metrics_events
+                WHERE metric_name = ?
+            """
+            params = [metric_name]
+
+            if start_time:
+                query += " AND timestamp >= ?"
+                params.append(start_time)
+
+            if end_time:
+                query += " AND timestamp <= ?"
+                params.append(end_time)
+
+            row = conn.execute(query, params).fetchone()
+
+            return {
+                "count": row["count"] or 0,
+                "total": row["total"] or 0,
+                "avg": row["avg"] or 0,
+                "min": row["min"] or 0,
+                "max": row["max"] or 0,
+            }
+
+    def cleanup_old_metrics(self, days: int = 30) -> int:
+        """Delete metrics older than N days."""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """DELETE FROM metrics_events
+                   WHERE datetime(timestamp) < datetime('now', ?)""",
                 (f'-{days} days',)
             )
             return cursor.rowcount

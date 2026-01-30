@@ -111,7 +111,7 @@ class TestCallWithRetry:
         def mock_func():
             return "success"
 
-        result = await processor._call_with_retry(mock_func)
+        result = await processor._call_with_retry(mock_func, "test_operation")
         assert result == "success"
 
     @pytest.mark.asyncio
@@ -126,9 +126,10 @@ class TestCallWithRetry:
                 raise Exception("Temporary network error")
             return "success after retries"
 
-        # Mock sleep to speed up test
+        # Mock sleep and metrics to speed up test
         with patch("asyncio.sleep", new=AsyncMock()):
-            result = await processor._call_with_retry(mock_func)
+            with patch("app.core.ai_processor.record_ai_retry"):
+                result = await processor._call_with_retry(mock_func, "test_operation")
 
         assert result == "success after retries"
         assert call_count == 3
@@ -140,8 +141,9 @@ class TestCallWithRetry:
             raise Exception("Persistent error")
 
         with patch("asyncio.sleep", new=AsyncMock()):
-            with pytest.raises(AIProcessorError, match="failed after 3 attempts"):
-                await processor._call_with_retry(mock_func)
+            with patch("app.core.ai_processor.record_ai_retry"):
+                with pytest.raises(AIProcessorError, match="failed after 3 attempts"):
+                    await processor._call_with_retry(mock_func, "test_operation")
 
     @pytest.mark.asyncio
     async def test_no_retry_on_auth_error(self, processor):
@@ -154,10 +156,19 @@ class TestCallWithRetry:
             raise Exception("Invalid API key - authentication error")
 
         with pytest.raises(AIProcessorError, match="AI processing failed"):
-            await processor._call_with_retry(mock_func)
+            await processor._call_with_retry(mock_func, "test_operation")
 
         # Should only be called once (no retries)
         assert call_count == 1
+
+
+def _create_mock_response(text: str = "test response"):
+    """Helper to create a properly mocked Gemini response."""
+    mock_response = MagicMock()
+    mock_response.text = text
+    # Mock usage_metadata to avoid issues with metrics
+    mock_response.usage_metadata = None
+    return mock_response
 
 
 class TestExtractLinks:
@@ -166,23 +177,23 @@ class TestExtractLinks:
     @pytest.mark.asyncio
     async def test_extracts_links_from_response(self):
         """Should extract valid URLs from AI response."""
-        mock_response = MagicMock()
-        mock_response.text = """
+        mock_response = _create_mock_response("""
         Here are the sub-pages:
         https://example.com/page1
         https://example.com/page2
         https://other.com/page (should be filtered)
-        """
+        """)
 
         mock_client = MagicMock()
         mock_client.models.generate_content = MagicMock(return_value=mock_response)
 
         with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
-            processor = AIProcessor(api_key="test-key")
-            links = await processor.extract_links(
-                markdown="# Test content",
-                start_url="https://example.com",
-            )
+            with patch("app.core.ai_processor.flush_langfuse"):
+                processor = AIProcessor(api_key="test-key")
+                links = await processor.extract_links(
+                    markdown="# Test content",
+                    start_url="https://example.com",
+                )
 
         assert "https://example.com/page1" in links
         assert "https://example.com/page2" in links
@@ -191,22 +202,22 @@ class TestExtractLinks:
     @pytest.mark.asyncio
     async def test_deduplicates_links(self):
         """Should return unique links only."""
-        mock_response = MagicMock()
-        mock_response.text = """
+        mock_response = _create_mock_response("""
         https://example.com/page1
         https://example.com/page1
         https://example.com/page2
-        """
+        """)
 
         mock_client = MagicMock()
         mock_client.models.generate_content = MagicMock(return_value=mock_response)
 
         with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
-            processor = AIProcessor(api_key="test-key")
-            links = await processor.extract_links(
-                markdown="# Test",
-                start_url="https://example.com",
-            )
+            with patch("app.core.ai_processor.flush_langfuse"):
+                processor = AIProcessor(api_key="test-key")
+                links = await processor.extract_links(
+                    markdown="# Test",
+                    start_url="https://example.com",
+                )
 
         # Should have 2 unique links
         assert len(links) == 2
@@ -214,21 +225,21 @@ class TestExtractLinks:
     @pytest.mark.asyncio
     async def test_excludes_start_url(self):
         """Should exclude the start URL from extracted links."""
-        mock_response = MagicMock()
-        mock_response.text = """
+        mock_response = _create_mock_response("""
         https://example.com
         https://example.com/page1
-        """
+        """)
 
         mock_client = MagicMock()
         mock_client.models.generate_content = MagicMock(return_value=mock_response)
 
         with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
-            processor = AIProcessor(api_key="test-key")
-            links = await processor.extract_links(
-                markdown="# Test",
-                start_url="https://example.com",
-            )
+            with patch("app.core.ai_processor.flush_langfuse"):
+                processor = AIProcessor(api_key="test-key")
+                links = await processor.extract_links(
+                    markdown="# Test",
+                    start_url="https://example.com",
+                )
 
         assert "https://example.com" not in links
         assert "https://example.com/page1" in links
@@ -240,36 +251,37 @@ class TestCleanContent:
     @pytest.mark.asyncio
     async def test_returns_cleaned_content(self):
         """Should return cleaned content from AI."""
-        mock_response = MagicMock()
-        mock_response.text = "# Cleaned Content\n\nThis is the cleaned version."
+        mock_response = _create_mock_response("# Cleaned Content\n\nThis is the cleaned version.")
 
         mock_client = MagicMock()
         mock_client.models.generate_content = MagicMock(return_value=mock_response)
 
         with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
-            processor = AIProcessor(api_key="test-key")
-            result = await processor.clean_content(
-                content="# Messy content with nav etc",
-                start_url="https://example.com",
-            )
+            with patch("app.core.ai_processor.flush_langfuse"):
+                processor = AIProcessor(api_key="test-key")
+                result = await processor.clean_content(
+                    content="# Messy content with nav etc",
+                    start_url="https://example.com",
+                )
 
         assert result == "# Cleaned Content\n\nThis is the cleaned version."
 
     @pytest.mark.asyncio
     async def test_handles_empty_response(self):
         """Should handle empty AI response."""
-        mock_response = MagicMock()
+        mock_response = _create_mock_response(None)
         mock_response.text = None
 
         mock_client = MagicMock()
         mock_client.models.generate_content = MagicMock(return_value=mock_response)
 
         with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
-            processor = AIProcessor(api_key="test-key")
-            result = await processor.clean_content(
-                content="# Content",
-                start_url="https://example.com",
-            )
+            with patch("app.core.ai_processor.flush_langfuse"):
+                processor = AIProcessor(api_key="test-key")
+                result = await processor.clean_content(
+                    content="# Content",
+                    start_url="https://example.com",
+                )
 
         assert result == "Failed to clean content."
 
@@ -283,9 +295,10 @@ class TestCleanContent:
 
         with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
             with patch("asyncio.sleep", new=AsyncMock()):
-                processor = AIProcessor(api_key="test-key", max_retries=1)
-                with pytest.raises(AIProcessorError):
-                    await processor.clean_content(
-                        content="# Content",
-                        start_url="https://example.com",
-                    )
+                with patch("app.core.ai_processor.record_ai_retry"):
+                    processor = AIProcessor(api_key="test-key", max_retries=1)
+                    with pytest.raises(AIProcessorError):
+                        await processor.clean_content(
+                            content="# Content",
+                            start_url="https://example.com",
+                        )

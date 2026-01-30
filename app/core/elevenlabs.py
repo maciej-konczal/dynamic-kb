@@ -1,5 +1,6 @@
 """ElevenLabs ConvAI API client for knowledge base management."""
 
+import time
 from typing import Optional
 from dataclasses import dataclass
 
@@ -7,6 +8,12 @@ import httpx
 
 from app.core.logging import get_logger
 from app.core.exceptions import ElevenLabsError
+from app.core.metrics import (
+    record_elevenlabs_request,
+    record_elevenlabs_retry,
+    record_kb_document_created,
+    record_kb_document_deleted,
+)
 
 logger = get_logger("elevenlabs")
 
@@ -24,7 +31,13 @@ class KBDocument:
 class ElevenLabsClient:
     """Client for ElevenLabs ConvAI API."""
 
-    def __init__(self, api_key: str, timeout: float = 60.0, max_retries: int = 3):
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 60.0,
+        max_retries: int = 3,
+        source_name: Optional[str] = None,
+    ):
         self.api_key = api_key
         self.base_url = "https://api.elevenlabs.io/v1/convai"
         self.headers = {
@@ -33,6 +46,7 @@ class ElevenLabsClient:
         }
         self.timeout = timeout
         self.max_retries = max_retries
+        self.source_name = source_name or "unknown"
 
     async def _request(
         self,
@@ -43,6 +57,7 @@ class ElevenLabsClient:
         """Make an HTTP request with retries."""
         url = f"{self.base_url}/{endpoint}"
         last_error = None
+        start_time = time.time()
 
         for attempt in range(self.max_retries):
             try:
@@ -57,6 +72,15 @@ class ElevenLabsClient:
                     )
                     response.raise_for_status()
 
+                    # Record success metric
+                    duration = time.time() - start_time
+                    record_elevenlabs_request(
+                        endpoint=endpoint.split('/')[0],  # e.g., "knowledge-base" or "agents"
+                        method=method,
+                        status="success",
+                        duration=duration,
+                    )
+
                     # Handle empty responses
                     if not response.content:
                         return {"status": "success"}
@@ -66,16 +90,51 @@ class ElevenLabsClient:
                 status_code = e.response.status_code
                 if status_code >= 500:
                     logger.warning(f"Server error ({status_code}), retrying...")
+                    record_elevenlabs_retry(
+                        endpoint=endpoint.split('/')[0],
+                        method=method,
+                    )
                     continue  # Retry on server errors
+
+                # Record error metric
+                duration = time.time() - start_time
+                record_elevenlabs_request(
+                    endpoint=endpoint.split('/')[0],
+                    method=method,
+                    status=f"error_{status_code}",
+                    duration=duration,
+                )
+
                 logger.error(f"HTTP error: {status_code} - {e.response.text}")
                 raise ElevenLabsError(f"ElevenLabs API error ({status_code}): {e.response.text}") from e
             except httpx.RequestError as e:
                 last_error = e
                 logger.warning(f"Request error (attempt {attempt + 1}): {e}")
+                record_elevenlabs_retry(
+                    endpoint=endpoint.split('/')[0],
+                    method=method,
+                )
                 if attempt < self.max_retries - 1:
                     continue
+
+                # Record error metric
+                duration = time.time() - start_time
+                record_elevenlabs_request(
+                    endpoint=endpoint.split('/')[0],
+                    method=method,
+                    status="error_network",
+                    duration=duration,
+                )
                 raise ElevenLabsError(f"ElevenLabs request failed: {e}") from e
 
+        # Record final error metric
+        duration = time.time() - start_time
+        record_elevenlabs_request(
+            endpoint=endpoint.split('/')[0],
+            method=method,
+            status="error_retries_exhausted",
+            duration=duration,
+        )
         raise ElevenLabsError(f"ElevenLabs request failed after {self.max_retries} retries: {last_error}")
 
     async def create_kb_text(self, name: str, text: str) -> str:
@@ -88,6 +147,10 @@ class ElevenLabsClient:
         )
         doc_id = data["id"]
         logger.info(f"Created KB document: {doc_id}")
+
+        # Record KB creation metric
+        record_kb_document_created(source_name=self.source_name, content_size=len(text))
+
         return doc_id
 
     async def trigger_rag_index(
@@ -130,6 +193,10 @@ class ElevenLabsClient:
             endpoint=f"knowledge-base/{documentation_id}",
         )
         logger.info(f"Deleted KB document: {documentation_id}")
+
+        # Record KB deletion metric
+        record_kb_document_deleted(source_name=self.source_name)
+
         return result
 
     async def get_agent(self, agent_id: str) -> dict:
