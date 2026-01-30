@@ -36,19 +36,26 @@ dynamic-kb/
 │   │   ├── scraper.py       # Web crawling (crawl4ai)
 │   │   ├── ai_processor.py  # Gemini content processing
 │   │   ├── elevenlabs.py    # ElevenLabs API client
-│   │   └── differ.py        # Content change detection
+│   │   ├── differ.py        # Content change detection
+│   │   ├── exceptions.py    # Custom exception types
+│   │   ├── logging.py       # Structured logging
+│   │   ├── metrics.py       # Prometheus metrics
+│   │   ├── metrics_storage.py # Metrics persistence to DB
+│   │   └── observability.py # Langfuse LLM tracing
 │   ├── models/
 │   │   └── config.py        # Pydantic models for config
 │   ├── ui/
 │   │   ├── dashboard.py     # Main dashboard page
 │   │   ├── sources.py       # Source management page
 │   │   ├── history.py       # Execution history page
-│   │   └── settings.py      # Settings page
+│   │   ├── settings.py      # Settings page
+│   │   └── health.py        # Health & observability page
 │   └── utils/
-│       └── storage.py       # File/state management
+│       ├── database.py      # SQLite backend
+│       ├── supabase_db.py   # Supabase backend
+│       └── storage.py       # Storage abstraction
 ├── data/                    # Runtime data (gitignored)
-│   ├── history.json         # Execution history
-│   ├── content_hashes.json  # Change detection
+│   ├── kb_sync.db           # SQLite database
 │   └── outputs/             # Generated KB files
 ├── config.yaml              # Source configuration
 ├── update_kb.py             # Legacy production script
@@ -60,10 +67,15 @@ dynamic-kb/
 
 ### Core Modules
 
-- **app/core/scraper.py** - `Scraper` class wrapping crawl4ai for web crawling with configurable depth, page limits, and URL pattern filtering
-- **app/core/ai_processor.py** - `AIProcessor` class for Gemini-based link extraction and multimodal content cleaning
-- **app/core/elevenlabs.py** - `ElevenLabsClient` class for KB CRUD, RAG indexing, and agent management
+- **app/core/scraper.py** - `Scraper` class wrapping crawl4ai for web crawling with configurable depth, page limits, timeout, and URL pattern filtering
+- **app/core/ai_processor.py** - `AIProcessor` class for Gemini-based link extraction and multimodal content cleaning with retry logic and Langfuse tracing
+- **app/core/elevenlabs.py** - `ElevenLabsClient` class for KB CRUD, RAG indexing, and agent management with retry logic
 - **app/core/differ.py** - `ContentDiffer` class for content hashing and change detection
+- **app/core/exceptions.py** - Custom exception hierarchy (`DynamicKBError`, `ScraperError`, `AIProcessorError`, `ElevenLabsError`, `ConfigurationError`)
+- **app/core/logging.py** - Structured logging with configurable `LOG_LEVEL` environment variable
+- **app/core/metrics.py** - Prometheus metrics for scraping, AI, ElevenLabs, KB operations, and health checks
+- **app/core/metrics_storage.py** - `MetricsStorage` class for persisting metrics to SQLite/Supabase
+- **app/core/observability.py** - Langfuse integration with `LangfuseTrace`, `LangfuseSpan`, `LangfuseGeneration` context managers
 
 ### Configuration
 
@@ -102,6 +114,12 @@ Required in `.env`:
 
 Optional:
 - `CONFIG_PATH` - Path to config.yaml (default: `config.yaml`)
+- `SUPABASE_URL` - Supabase project URL (enables cloud database)
+- `SUPABASE_KEY` - Supabase publishable key
+- `LANGFUSE_PUBLIC_KEY` - Langfuse public key (enables LLM tracing)
+- `LANGFUSE_SECRET_KEY` - Langfuse secret key
+- `LANGFUSE_HOST` - Langfuse host URL (default: `https://cloud.langfuse.com`)
+- `LOG_LEVEL` - Logging level: DEBUG, INFO, WARNING, ERROR (default: `INFO`)
 
 ## UI Pages
 
@@ -109,3 +127,4 @@ Optional:
 - **Sources** (`/sources`) - CRUD for source configurations
 - **History** (`/history`) - Execution logs with filtering
 - **Settings** (`/settings`) - API keys and global settings
+- **Health** (`/health`) - System health checks, Langfuse status, metrics dashboard with historical charts

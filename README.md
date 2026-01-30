@@ -15,8 +15,10 @@ Dynamic-KB automatically crawls websites, extracts and cleans content using AI, 
 - **AI Content Processing** - Clean and deduplicate content with Google Gemini (multimodal vision support)
 - **Preview Before Push** - Review scraped content and compare with previous versions before syncing
 - **Change Detection** - Only push updates when content actually changes
-- **Version History** - SQLite-backed storage with full version history and rollback
+- **Version History** - SQLite/Supabase storage with full version history and rollback
 - **ElevenLabs Integration** - Automatic KB upload, RAG indexing, and agent updates
+- **Observability** - LLM tracing with Langfuse, metrics with Prometheus, health monitoring
+- **Enterprise Ready** - Structured logging, retries with exponential backoff, custom exceptions
 - **Web UI** - Streamlit dashboard for easy management
 - **Cloud Ready** - One-click deploy to Railway, Render, or Docker
 
@@ -129,6 +131,10 @@ settings:
 | `CONFIG_PATH` | Path to config.yaml | No |
 | `SUPABASE_URL` | Supabase project URL | No |
 | `SUPABASE_KEY` | Supabase Publishable key | No |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key for LLM tracing | No |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key | No |
+| `LANGFUSE_HOST` | Langfuse host URL (default: cloud.langfuse.com) | No |
+| `LOG_LEVEL` | Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO) | No |
 
 ### Database Options
 
@@ -180,11 +186,22 @@ CREATE TABLE execution_history (
     version_id INTEGER REFERENCES content_versions(id)
 );
 
+-- metrics_events table (for observability)
+CREATE TABLE metrics_events (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metric_name TEXT NOT NULL,
+    metric_value DOUBLE PRECISION NOT NULL,
+    labels JSONB DEFAULT '{}'::jsonb
+);
+
 -- Indexes for performance
 CREATE INDEX idx_versions_source ON content_versions(source_name);
 CREATE INDEX idx_drafts_source ON content_drafts(source_name);
 CREATE INDEX idx_drafts_status ON content_drafts(status);
 CREATE INDEX idx_history_source ON execution_history(source_name);
+CREATE INDEX idx_metrics_name ON metrics_events(metric_name);
+CREATE INDEX idx_metrics_timestamp ON metrics_events(timestamp);
 ```
 
 3. Copy your credentials from Project Settings → API and add to `.env`:
@@ -194,6 +211,31 @@ SUPABASE_KEY=your_supabase_publishable_key
 ```
 
 The app automatically uses Supabase when these variables are set.
+
+### Observability (Optional)
+
+Dynamic-KB includes enterprise-grade observability features:
+
+#### Langfuse (LLM Tracing)
+Track all AI calls with inputs, outputs, token usage, and latency.
+
+1. Create a free account at [cloud.langfuse.com](https://cloud.langfuse.com)
+2. Get your API keys from Settings → API Keys
+3. Add to `.env`:
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+#### Metrics (Prometheus-compatible)
+Application metrics are automatically persisted to your database (SQLite or Supabase) and displayed on the Health page. Tracked metrics include:
+- AI requests, retries, and token usage
+- Scraping operations and duration
+- ElevenLabs API calls
+- Knowledge base document operations
+- Health check status
+
+View metrics on the **Health** page in the web UI.
 
 ## Architecture
 
@@ -205,19 +247,26 @@ dynamic-kb/
 │   │   ├── scraper.py       # Web crawling (crawl4ai)
 │   │   ├── ai_processor.py  # Gemini content processing
 │   │   ├── elevenlabs.py    # ElevenLabs API client
-│   │   └── differ.py        # Change detection
+│   │   ├── differ.py        # Change detection
+│   │   ├── exceptions.py    # Custom exception types
+│   │   ├── logging.py       # Structured logging
+│   │   ├── metrics.py       # Prometheus metrics
+│   │   ├── metrics_storage.py # Metrics persistence
+│   │   └── observability.py # Langfuse LLM tracing
 │   ├── models/
 │   │   └── config.py        # Pydantic config models
 │   ├── ui/
 │   │   ├── dashboard.py     # Main dashboard
 │   │   ├── sources.py       # Source management
 │   │   ├── history.py       # Version history
-│   │   └── settings.py      # Settings page
+│   │   ├── settings.py      # Settings page
+│   │   └── health.py        # Health & metrics page
 │   └── utils/
 │       ├── database.py      # SQLite backend
+│       ├── supabase_db.py   # Supabase backend
 │       └── storage.py       # Storage abstraction
 ├── data/
-│   └── kb_sync.db           # SQLite database
+│   └── kb_sync.db           # SQLite database (local)
 ├── config.yaml              # Source configuration
 ├── Dockerfile
 ├── docker-compose.yml
