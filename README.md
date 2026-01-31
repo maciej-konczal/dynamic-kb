@@ -13,6 +13,7 @@ Dynamic-KB automatically crawls websites, extracts and cleans content using AI, 
 
 - **Web Scraping** - Crawl websites with configurable depth using [crawl4ai](https://github.com/unclecode/crawl4ai)
 - **AI Content Processing** - Clean and deduplicate content with Google Gemini (multimodal vision support)
+- **Built-in Scheduler** - Cron-based scheduling with SQLite persistence, survives restarts
 - **Preview Before Push** - Review scraped content and compare with previous versions before syncing
 - **Change Detection** - Only push updates when content actually changes
 - **Version History** - SQLite/Supabase storage with full version history and rollback
@@ -108,6 +109,8 @@ sources:
   - name: "My Website News"
     url: "https://example.com/news"
     enabled: true
+    schedule: "0 8 * * *"       # Cron expression (daily at 8am)
+    schedule_enabled: true      # Can pause without removing schedule
     scraping:
       max_depth: 1
       max_pages: 5
@@ -121,6 +124,49 @@ settings:
   gemini_model: "gemini-2.5-flash"
   change_detection: true
 ```
+
+### Scheduling
+
+Dynamic-KB includes a built-in scheduler that runs inside the Streamlit process. Jobs persist in SQLite and survive app restarts.
+
+#### Adding a Schedule
+
+Add a `schedule` field to any source in `config.yaml`:
+
+```yaml
+sources:
+  - name: "Daily Docs Sync"
+    url: "https://docs.example.com"
+    schedule: "0 8 * * *"        # Daily at 8:00 AM
+    schedule_enabled: true       # Toggle without removing schedule
+    # ... rest of config
+```
+
+#### Common Cron Expressions
+
+| Expression | Description |
+|------------|-------------|
+| `0 8 * * *` | Daily at 8:00 AM |
+| `0 */2 * * *` | Every 2 hours |
+| `*/30 * * * *` | Every 30 minutes |
+| `0 9 * * 1` | Every Monday at 9:00 AM |
+| `0 0 1 * *` | First day of month at midnight |
+| `0 8 * * 1-5` | Weekdays at 8:00 AM |
+
+#### Managing Schedules
+
+Use the **Scheduler** page in the web UI to:
+- View all scheduled jobs with next run times
+- Pause/resume individual jobs or all jobs
+- Sync scheduler with config changes
+- Start/stop the scheduler
+
+#### How Scheduled Jobs Work
+
+1. When a scheduled job runs, it scrapes the source automatically
+2. If content changed, it creates a **draft** (not auto-pushed to ElevenLabs)
+3. You review and approve drafts on the **Dashboard** page
+4. Missed jobs during downtime are recovered when the app restarts (up to 1 hour late)
 
 ### Environment Variables
 
@@ -247,6 +293,8 @@ dynamic-kb/
 │   │   ├── scraper.py       # Web crawling (crawl4ai)
 │   │   ├── ai_processor.py  # Gemini content processing
 │   │   ├── elevenlabs.py    # ElevenLabs API client
+│   │   ├── scheduler.py     # APScheduler with SQLite persistence
+│   │   ├── scheduled_tasks.py # Task wrappers for scheduler
 │   │   ├── differ.py        # Change detection
 │   │   ├── exceptions.py    # Custom exception types
 │   │   ├── logging.py       # Structured logging
@@ -258,6 +306,7 @@ dynamic-kb/
 │   ├── ui/
 │   │   ├── dashboard.py     # Main dashboard
 │   │   ├── sources.py       # Source management
+│   │   ├── scheduler.py     # Scheduler management
 │   │   ├── history.py       # Version history
 │   │   ├── settings.py      # Settings page
 │   │   └── health.py        # Health & metrics page

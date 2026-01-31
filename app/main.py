@@ -20,7 +20,10 @@ from app.ui.sources import render_sources
 from app.ui.history import render_history
 from app.ui.settings import render_settings
 from app.ui.health import render_health_page
+from app.ui.scheduler import render_scheduler_page
 from app.core.logging import get_logger
+from app.core.scheduler import get_scheduler
+from app.core.scheduled_tasks import run_scheduled_scrape
 
 logger = get_logger("main")
 
@@ -143,6 +146,27 @@ def validate_api_keys() -> dict:
     return results
 
 
+def init_scheduler(config: AppConfig):
+    """Initialize the scheduler and sync with config."""
+    if "scheduler_initialized" not in st.session_state:
+        try:
+            scheduler = get_scheduler(config.settings.data_dir)
+            scheduler.set_task_function(run_scheduled_scrape)
+
+            # Start scheduler
+            if not scheduler.is_running:
+                scheduler.start()
+
+            # Sync jobs with config
+            scheduler.sync_with_config(config.sources)
+
+            st.session_state["scheduler_initialized"] = True
+            logger.info("Scheduler initialized and synced with config")
+        except Exception as e:
+            logger.error(f"Failed to initialize scheduler: {e}")
+            st.session_state["scheduler_initialized"] = False
+
+
 def main():
     """Main application entry point."""
     # Load configuration
@@ -150,6 +174,9 @@ def main():
 
     # Initialize storage
     storage = Storage(data_dir=config.settings.data_dir)
+
+    # Initialize scheduler
+    init_scheduler(config)
 
     # Load API keys from environment if not in session state
     if "gemini_api_key" not in st.session_state:
@@ -166,7 +193,7 @@ def main():
 
     page = st.sidebar.radio(
         "Navigation",
-        options=["Dashboard", "Sources", "History", "Settings", "Health"],
+        options=["Dashboard", "Sources", "Scheduler", "History", "Settings", "Health"],
         index=0,
     )
 
@@ -204,6 +231,21 @@ def main():
     else:
         st.sidebar.markdown(" Supabase: Using SQLite")
 
+    # Scheduler status
+    if st.session_state.get("scheduler_initialized"):
+        try:
+            scheduler = get_scheduler(config.settings.data_dir)
+            jobs = scheduler.get_all_jobs()
+            active_jobs = len([j for j in jobs if not j.is_paused])
+            if scheduler.is_running:
+                st.sidebar.markdown(f" Scheduler: {active_jobs} active jobs")
+            else:
+                st.sidebar.markdown(" Scheduler: Stopped")
+        except Exception:
+            st.sidebar.markdown(" Scheduler: Error")
+    else:
+        st.sidebar.markdown(" Scheduler: Not initialized")
+
     st.sidebar.divider()
     st.sidebar.markdown(
         "Made with [crawl4ai](https://github.com/unclecode/crawl4ai) & "
@@ -215,6 +257,8 @@ def main():
         render_dashboard(config, storage)
     elif page == "Sources":
         render_sources(config, config_path)
+    elif page == "Scheduler":
+        render_scheduler_page(config)
     elif page == "History":
         render_history(config, storage)
     elif page == "Settings":

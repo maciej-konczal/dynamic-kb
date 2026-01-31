@@ -425,3 +425,40 @@ def record_health_check(component: str, healthy: bool, duration: float):
     HEALTH_CHECK_DURATION_SECONDS.labels(component=component).observe(duration)
     _persist_metric("health_check_status", 1.0 if healthy else 0.0, {"component": component})
     _persist_metric("health_check_duration_seconds", duration, {"component": component})
+
+
+# =============================================================================
+# Scheduler Metrics
+# =============================================================================
+
+SCHEDULED_JOB_RUNS_TOTAL = Counter(
+    "dynamic_kb_scheduled_job_runs_total",
+    "Total number of scheduled job runs",
+    ["source_name", "status"],
+)
+
+SCHEDULED_JOB_DURATION_SECONDS = Histogram(
+    "dynamic_kb_scheduled_job_duration_seconds",
+    "Duration of scheduled job executions in seconds",
+    ["source_name"],
+    buckets=(10, 30, 60, 120, 300, 600, 1200),
+)
+
+ACTIVE_SCHEDULED_JOBS = Gauge(
+    "dynamic_kb_active_scheduled_jobs",
+    "Number of active (non-paused) scheduled jobs",
+)
+
+
+def record_scheduled_job_run(source_name: str, status: str, duration: float):
+    """Record a scheduled job run."""
+    SCHEDULED_JOB_RUNS_TOTAL.labels(source_name=source_name, status=status).inc()
+    SCHEDULED_JOB_DURATION_SECONDS.labels(source_name=source_name).observe(duration)
+    _persist_metric("scheduled_job_runs_total", 1.0, {"source_name": source_name, "status": status})
+    _persist_metric("scheduled_job_duration_seconds", duration, {"source_name": source_name})
+
+
+def set_active_scheduled_jobs(count: int):
+    """Set the number of active scheduled jobs."""
+    ACTIVE_SCHEDULED_JOBS.set(count)
+    _persist_metric("active_scheduled_jobs", float(count), {})

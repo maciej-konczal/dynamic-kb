@@ -101,3 +101,25 @@ def test_storage(temp_dir):
 
     storage = Storage(data_dir=temp_dir)
     yield storage
+
+
+@pytest.fixture
+def sample_source_config():
+    """Sample source configuration for testing."""
+    return {
+        "name": "Test Source",
+        "url": "https://example.com",
+        "enabled": True,
+        "schedule": "0 8 * * *",
+        "schedule_enabled": True,
+        "scraping": {
+            "max_depth": 1,
+            "max_pages": 5,
+            "capture_screenshots": True,
+        },
+        "prompts": {},
+        "elevenlabs": {
+            "kb_prefix": "TEST_KB",
+            "agent_ids": ["agent1"],
+        },
+    }

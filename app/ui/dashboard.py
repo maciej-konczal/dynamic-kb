@@ -13,6 +13,7 @@ from app.core.ai_processor import AIProcessor
 from app.core.elevenlabs import ElevenLabsClient, KBDocument
 from app.core.differ import ContentDiffer
 from app.core.exceptions import ScraperError, AIProcessorError, ElevenLabsError
+from app.core.scheduler import get_scheduler, get_next_run_time, get_cron_description
 
 
 async def scrape_source(
@@ -320,6 +321,13 @@ def render_dashboard(config: AppConfig, storage: Storage):
                 st.caption(str(source.url))
                 if latest_version and latest_version.pushed_at:
                     st.caption(f"Last pushed: {latest_version.pushed_at[:19]}")
+
+                # Show next scheduled run if source has a schedule
+                if source.schedule and source.schedule_enabled:
+                    next_run = get_next_run_time(source.schedule)
+                    if next_run:
+                        next_run_str = next_run.strftime("%Y-%m-%d %H:%M")
+                        st.caption(f"Next run: {next_run_str}")
 
             with col2:
                 if pending:

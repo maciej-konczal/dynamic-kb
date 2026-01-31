@@ -39,7 +39,8 @@ class SourceConfig(BaseModel):
     name: str = Field(description="Human-readable name for the source")
     url: HttpUrl = Field(description="URL to scrape")
     enabled: bool = Field(default=True, description="Whether this source is active")
-    schedule: Optional[str] = Field(default=None, description="Cron expression for scheduling (informational)")
+    schedule: Optional[str] = Field(default=None, description="Cron expression for scheduling")
+    schedule_enabled: bool = Field(default=True, description="Whether scheduled runs are enabled (allows pausing without removing schedule)")
     scraping: ScrapingConfig = Field(default_factory=ScrapingConfig)
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
     elevenlabs: ElevenLabsConfig

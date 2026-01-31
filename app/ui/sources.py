@@ -4,6 +4,7 @@ import streamlit as st
 import yaml
 
 from app.models.config import AppConfig, SourceConfig, ScrapingConfig, PromptsConfig, ElevenLabsConfig, save_config
+from app.core.scheduler import validate_cron_expression, get_next_run_time, get_cron_description
 
 
 def render_sources(config: AppConfig, config_path: str = "config.yaml"):
@@ -69,10 +70,28 @@ def render_source_form(config: AppConfig, config_path: str, source: SourceConfig
                 help="ElevenLabs agent IDs to update",
             )
             schedule = st.text_input(
-                "Schedule (cron, informational)",
+                "Schedule (cron)",
                 value=source.schedule if is_edit and source.schedule else "",
                 key=f"{prefix}schedule",
                 help="Cron expression for scheduling (e.g., '0 8 * * *' for daily at 8am)",
+            )
+
+            # Show schedule validation and preview
+            if schedule:
+                valid, error = validate_cron_expression(schedule)
+                if valid:
+                    next_run = get_next_run_time(schedule)
+                    description = get_cron_description(schedule)
+                    if next_run:
+                        st.caption(f"{description} - Next: {next_run.strftime('%Y-%m-%d %H:%M')}")
+                else:
+                    st.error(error)
+
+            schedule_enabled = st.checkbox(
+                "Schedule Enabled",
+                value=source.schedule_enabled if is_edit else True,
+                key=f"{prefix}schedule_enabled",
+                help="Enable/disable scheduled runs without removing the schedule",
             )
 
         st.markdown("**Scraping Settings**")
@@ -131,12 +150,20 @@ def render_source_form(config: AppConfig, config_path: str, source: SourceConfig
                 st.error("Name, URL, and KB Prefix are required")
                 return
 
+            # Validate cron expression if provided
+            if schedule:
+                valid, error = validate_cron_expression(schedule)
+                if not valid:
+                    st.error(f"Invalid schedule: {error}")
+                    return
+
             # Build source config
             new_source = SourceConfig(
                 name=name,
                 url=url,
                 enabled=enabled,
                 schedule=schedule if schedule else None,
+                schedule_enabled=schedule_enabled,
                 scraping=ScrapingConfig(
                     max_depth=max_depth,
                     max_pages=max_pages,
@@ -175,7 +202,13 @@ def render_source_card(config: AppConfig, config_path: str, source: SourceConfig
             st.markdown(f"**KB Prefix:** `{source.elevenlabs.kb_prefix}`")
             st.markdown(f"**Agents:** {len(source.elevenlabs.agent_ids)} configured")
             if source.schedule:
-                st.markdown(f"**Schedule:** `{source.schedule}`")
+                description = get_cron_description(source.schedule)
+                status = "" if source.schedule_enabled else " (paused)"
+                st.markdown(f"**Schedule:** `{source.schedule}` - {description}{status}")
+                if source.schedule_enabled:
+                    next_run = get_next_run_time(source.schedule)
+                    if next_run:
+                        st.caption(f"Next run: {next_run.strftime('%Y-%m-%d %H:%M')}")
 
         with col2:
             if st.button("Edit", key=f"edit_btn_{index}"):

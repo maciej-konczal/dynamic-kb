@@ -19,3 +19,7 @@ class ElevenLabsError(DynamicKBError):
 
 class ConfigurationError(DynamicKBError):
     """Raised when configuration is invalid."""
+
+
+class SchedulerError(DynamicKBError):
+    """Raised when scheduler operations fail."""

@@ -63,6 +63,21 @@ class MetricEvent:
     labels: dict  # JSON object with label key-values
 
 
+@dataclass
+class ScheduledJobState:
+    """State of a scheduled job for persistence."""
+
+    id: int
+    source_name: str
+    cron_expression: str
+    is_paused: bool
+    last_run_at: Optional[str]
+    last_run_status: Optional[str]
+    last_error: Optional[str]
+    created_at: str
+    updated_at: str
+
+
 @runtime_checkable
 class DatabaseProtocol(Protocol):
     """Protocol defining the database interface."""
@@ -148,6 +163,30 @@ class DatabaseProtocol(Protocol):
 
     def cleanup_old_metrics(self, days: int = 30) -> int: ...
 
+    # Scheduled Jobs
+    def save_job_state(
+        self,
+        source_name: str,
+        cron_expression: str,
+        is_paused: bool = False,
+    ) -> ScheduledJobState: ...
+
+    def get_job_state(self, source_name: str) -> Optional[ScheduledJobState]: ...
+
+    def get_all_job_states(self) -> list[ScheduledJobState]: ...
+
+    def update_job_state(
+        self,
+        source_name: str,
+        is_paused: Optional[bool] = None,
+        last_run_at: Optional[str] = None,
+        last_run_status: Optional[str] = None,
+        last_error: Optional[str] = None,
+        cron_expression: Optional[str] = None,
+    ) -> Optional[ScheduledJobState]: ...
+
+    def delete_job_state(self, source_name: str) -> bool: ...
+
 
 class Database:
     """SQLite database manager for dynamic-kb."""
@@ -224,6 +263,20 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics_events(metric_name);
                 CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics_events(timestamp);
+
+                CREATE TABLE IF NOT EXISTS scheduled_job_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_name TEXT UNIQUE NOT NULL,
+                    cron_expression TEXT NOT NULL,
+                    is_paused BOOLEAN DEFAULT FALSE,
+                    last_run_at TEXT,
+                    last_run_status TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_job_state_source ON scheduled_job_state(source_name);
             """)
 
     # Content Versions
@@ -607,3 +660,117 @@ class Database:
                 (f'-{days} days',)
             )
             return cursor.rowcount
+
+    # Scheduled Jobs
+    def save_job_state(
+        self,
+        source_name: str,
+        cron_expression: str,
+        is_paused: bool = False,
+    ) -> ScheduledJobState:
+        """Save or update a scheduled job state."""
+        now = datetime.now().isoformat()
+
+        with self._get_conn() as conn:
+            # Try to update existing, otherwise insert
+            cursor = conn.execute(
+                """INSERT INTO scheduled_job_state
+                   (source_name, cron_expression, is_paused, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(source_name) DO UPDATE SET
+                   cron_expression = excluded.cron_expression,
+                   updated_at = excluded.updated_at""",
+                (source_name, cron_expression, is_paused, now, now)
+            )
+
+            # Fetch the saved/updated record
+            row = conn.execute(
+                "SELECT * FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            ).fetchone()
+
+            return ScheduledJobState(**dict(row))
+
+    def get_job_state(self, source_name: str) -> Optional[ScheduledJobState]:
+        """Get the state of a scheduled job by source name."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            ).fetchone()
+
+            if row:
+                return ScheduledJobState(**dict(row))
+            return None
+
+    def get_all_job_states(self) -> list[ScheduledJobState]:
+        """Get all scheduled job states."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_job_state ORDER BY source_name"
+            ).fetchall()
+
+            return [ScheduledJobState(**dict(row)) for row in rows]
+
+    def update_job_state(
+        self,
+        source_name: str,
+        is_paused: Optional[bool] = None,
+        last_run_at: Optional[str] = None,
+        last_run_status: Optional[str] = None,
+        last_error: Optional[str] = None,
+        cron_expression: Optional[str] = None,
+    ) -> Optional[ScheduledJobState]:
+        """Update a scheduled job state. Returns None if job not found."""
+        now = datetime.now().isoformat()
+
+        with self._get_conn() as conn:
+            # Build dynamic update query
+            updates = ["updated_at = ?"]
+            params = [now]
+
+            if is_paused is not None:
+                updates.append("is_paused = ?")
+                params.append(is_paused)
+
+            if last_run_at is not None:
+                updates.append("last_run_at = ?")
+                params.append(last_run_at)
+
+            if last_run_status is not None:
+                updates.append("last_run_status = ?")
+                params.append(last_run_status)
+
+            if last_error is not None:
+                updates.append("last_error = ?")
+                params.append(last_error)
+
+            if cron_expression is not None:
+                updates.append("cron_expression = ?")
+                params.append(cron_expression)
+
+            params.append(source_name)
+
+            conn.execute(
+                f"UPDATE scheduled_job_state SET {', '.join(updates)} WHERE source_name = ?",
+                params
+            )
+
+            # Fetch updated record
+            row = conn.execute(
+                "SELECT * FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            ).fetchone()
+
+            if row:
+                return ScheduledJobState(**dict(row))
+            return None
+
+    def delete_job_state(self, source_name: str) -> bool:
+        """Delete a scheduled job state. Returns True if deleted."""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            )
+            return cursor.rowcount > 0
