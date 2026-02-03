@@ -1,7 +1,9 @@
 """Dashboard page for dynamic-kb Streamlit UI."""
 
 import asyncio
+import json
 from datetime import datetime
+from typing import Optional
 
 import streamlit as st
 
@@ -14,14 +16,15 @@ from app.core.elevenlabs import ElevenLabsClient, KBDocument
 from app.core.differ import ContentDiffer
 from app.core.exceptions import ScraperError, AIProcessorError, ElevenLabsError
 from app.core.scheduler import get_scheduler, get_next_run_time, get_cron_description
+from app.core.quality_assessor import QualityAssessor, QualityResult
 
 
 async def scrape_source(
     source: SourceConfig,
     settings: AppConfig,
     gemini_key: str,
-) -> tuple[str, str, str]:
-    """Scrape and process content from a source. Returns (content, hash, diff_summary)."""
+) -> tuple[str, str, str, Optional[QualityResult]]:
+    """Scrape and process content from a source. Returns (content, hash, diff_summary, quality_result)."""
     # Initialize components
     scraper = Scraper(
         max_depth=source.scraping.max_depth,
@@ -74,7 +77,21 @@ async def scrape_source(
     differ = ContentDiffer()
     diff_summary = f"New content generated (hash: {content_hash[:8]}...)"
 
-    return clean_content, content_hash, diff_summary
+    # Step 5: Quality assessment (if enabled)
+    quality_result = None
+    if settings.settings.quality_scoring_enabled:
+        st.write("Assessing content quality...")
+        quality_assessor = QualityAssessor(
+            api_key=gemini_key,
+            model=settings.settings.gemini_model,
+        )
+        quality_result = await quality_assessor.assess_quality(
+            clean_content,
+            str(source.url),
+        )
+        st.write(f"Quality score: {quality_result.score}/100 ({quality_result.recommendation})")
+
+    return clean_content, content_hash, diff_summary, quality_result
 
 
 async def push_to_elevenlabs(
@@ -140,7 +157,7 @@ def render_draft_card(draft: ContentDraft, config: AppConfig, storage: Storage, 
     source = next((s for s in config.sources if s.name == draft.source_name), None)
 
     with st.container():
-        col1, col2 = st.columns([3, 1])
+        col1, col2, col3 = st.columns([3, 1, 1])
 
         with col1:
             st.markdown(f"### {draft.source_name}")
@@ -149,6 +166,34 @@ def render_draft_card(draft: ContentDraft, config: AppConfig, storage: Storage, 
                 st.info(draft.diff_summary)
 
         with col2:
+            # Quality score badge
+            if draft.quality_score is not None:
+                score = int(draft.quality_score)
+                # Color-code: green >= 80, yellow 30-79, red < 30
+                if score >= 80:
+                    st.markdown(f":green[Quality: **{score}**/100]")
+                    # Show recommendation badge for high scores
+                    if config.settings.quality_scoring_enabled:
+                        if score >= config.settings.quality_auto_approve_threshold:
+                            st.success("Recommended")
+                elif score >= 30:
+                    st.markdown(f":orange[Quality: **{score}**/100]")
+                else:
+                    st.markdown(f":red[Quality: **{score}**/100]")
+
+                # Show quality issues if any
+                if draft.quality_details:
+                    try:
+                        details = json.loads(draft.quality_details)
+                        issues = details.get("issues", [])
+                        if issues:
+                            with st.expander("Quality Issues", expanded=False):
+                                for issue in issues[:5]:  # Show first 5 issues
+                                    st.caption(f"- {issue}")
+                    except json.JSONDecodeError:
+                        pass
+
+        with col3:
             if source and source.elevenlabs.agent_ids:
                 st.markdown("**Will update agents:**")
                 for agent_id in source.elevenlabs.agent_ids:
@@ -353,7 +398,7 @@ def render_dashboard(config: AppConfig, storage: Storage):
                     if st.button("Scrape", key=f"scrape_{source.name}"):
                         with st.spinner(f"Scraping {source.name}..."):
                             try:
-                                content, content_hash, diff_summary = asyncio.run(
+                                content, content_hash, diff_summary, quality_result = asyncio.run(
                                     scrape_source(source, config, gemini_key)
                                 )
 
@@ -367,20 +412,47 @@ def render_dashboard(config: AppConfig, storage: Storage):
                                     )
                                     st.info("No changes detected")
                                 else:
+                                    # Prepare quality data
+                                    quality_score = quality_result.score if quality_result else None
+                                    quality_details = quality_result.to_json() if quality_result else None
+
+                                    # Record quality metrics
+                                    if quality_score is not None:
+                                        from app.core.metrics import record_draft_quality_score
+                                        record_draft_quality_score(source.name, quality_score)
+
                                     # Create draft for review
                                     draft = storage.create_draft(
                                         source.name,
                                         content,
                                         content_hash,
                                         diff_summary,
+                                        quality_score=quality_score,
+                                        quality_details=quality_details,
                                     )
-                                    storage.add_execution(
-                                        source_name=source.name,
-                                        status="draft_created",
-                                        content_hash=content_hash,
-                                        diff_summary=diff_summary,
-                                    )
-                                    st.success("Draft created! Review above.")
+
+                                    # Handle auto-reject based on quality threshold
+                                    if (quality_result and
+                                        config.settings.quality_scoring_enabled and
+                                        quality_result.score <= config.settings.quality_auto_reject_threshold):
+                                        storage.reject_draft(draft.id)
+                                        from app.core.metrics import record_draft_auto_rejected
+                                        record_draft_auto_rejected(source.name)
+                                        storage.add_execution(
+                                            source_name=source.name,
+                                            status="auto_rejected",
+                                            content_hash=content_hash,
+                                            diff_summary=f"Auto-rejected: quality score {quality_result.score} below threshold {config.settings.quality_auto_reject_threshold}",
+                                        )
+                                        st.warning(f"Draft auto-rejected due to low quality score ({quality_result.score}/100)")
+                                    else:
+                                        storage.add_execution(
+                                            source_name=source.name,
+                                            status="draft_created",
+                                            content_hash=content_hash,
+                                            diff_summary=diff_summary,
+                                        )
+                                        st.success("Draft created! Review above.")
 
                             except ScraperError as e:
                                 storage.add_execution(
@@ -426,7 +498,7 @@ def render_dashboard(config: AppConfig, storage: Storage):
 
                     status_text.text(f"Scraping {source.name}...")
                     try:
-                        content, content_hash, diff_summary = asyncio.run(
+                        content, content_hash, diff_summary, quality_result = asyncio.run(
                             scrape_source(source, config, gemini_key)
                         )
 
@@ -438,17 +510,42 @@ def render_dashboard(config: AppConfig, storage: Storage):
                                 content_hash=content_hash,
                             )
                         else:
-                            storage.create_draft(
+                            # Prepare quality data
+                            quality_score = quality_result.score if quality_result else None
+                            quality_details = quality_result.to_json() if quality_result else None
+
+                            # Record quality metrics
+                            if quality_score is not None:
+                                from app.core.metrics import record_draft_quality_score
+                                record_draft_quality_score(source.name, quality_score)
+
+                            draft = storage.create_draft(
                                 source.name,
                                 content,
                                 content_hash,
                                 diff_summary,
+                                quality_score=quality_score,
+                                quality_details=quality_details,
                             )
-                            storage.add_execution(
-                                source_name=source.name,
-                                status="draft_created",
-                                content_hash=content_hash,
-                            )
+
+                            # Handle auto-reject based on quality threshold
+                            if (quality_result and
+                                config.settings.quality_scoring_enabled and
+                                quality_result.score <= config.settings.quality_auto_reject_threshold):
+                                storage.reject_draft(draft.id)
+                                from app.core.metrics import record_draft_auto_rejected
+                                record_draft_auto_rejected(source.name)
+                                storage.add_execution(
+                                    source_name=source.name,
+                                    status="auto_rejected",
+                                    content_hash=content_hash,
+                                )
+                            else:
+                                storage.add_execution(
+                                    source_name=source.name,
+                                    status="draft_created",
+                                    content_hash=content_hash,
+                                )
 
                     except (ScraperError, AIProcessorError) as e:
                         storage.add_execution(

@@ -13,6 +13,8 @@ from app.core.metrics import (
     SCRAPE_REQUESTS_TOTAL,
     SCRAPE_DURATION_SECONDS,
     record_draft_created,
+    record_draft_quality_score,
+    record_draft_auto_rejected,
 )
 from app.models.config import load_config, AppConfig, SourceConfig
 from app.utils.storage import Storage
@@ -81,8 +83,8 @@ async def scheduled_scrape_task(source_name: str) -> dict:
         # Import scrape function from dashboard
         from app.ui.dashboard import scrape_source
 
-        # Run the scrape
-        content, content_hash, diff_summary = await scrape_source(
+        # Run the scrape (now returns quality_result as well)
+        content, content_hash, diff_summary, quality_result = await scrape_source(
             source, config, gemini_key
         )
 
@@ -99,22 +101,48 @@ async def scheduled_scrape_task(source_name: str) -> dict:
             )
             logger.info(f"No changes detected for {source_name}")
         else:
+            # Prepare quality data
+            quality_score = quality_result.score if quality_result else None
+            quality_details = quality_result.to_json() if quality_result else None
+
+            # Record quality metrics
+            if quality_score is not None:
+                record_draft_quality_score(source_name, quality_score)
+
             # Create draft for review
-            storage.create_draft(
+            draft = storage.create_draft(
                 source_name,
                 content,
                 content_hash,
                 diff_summary,
+                quality_score=quality_score,
+                quality_details=quality_details,
             )
-            storage.add_execution(
-                source_name=source_name,
-                status="draft_created",
-                content_hash=content_hash,
-                diff_summary=diff_summary,
-            )
-            result["status"] = "draft_created"
-            record_draft_created(source_name)
-            logger.info(f"Draft created for {source_name}")
+
+            # Handle auto-reject based on quality threshold
+            if (quality_result and
+                config.settings.quality_scoring_enabled and
+                quality_result.score <= config.settings.quality_auto_reject_threshold):
+                storage.reject_draft(draft.id)
+                record_draft_auto_rejected(source_name)
+                storage.add_execution(
+                    source_name=source_name,
+                    status="auto_rejected",
+                    content_hash=content_hash,
+                    diff_summary=f"Auto-rejected: quality score {quality_result.score} below threshold {config.settings.quality_auto_reject_threshold}",
+                )
+                result["status"] = "auto_rejected"
+                logger.info(f"Draft auto-rejected for {source_name} (quality score: {quality_result.score})")
+            else:
+                storage.add_execution(
+                    source_name=source_name,
+                    status="draft_created",
+                    content_hash=content_hash,
+                    diff_summary=diff_summary,
+                )
+                result["status"] = "draft_created"
+                record_draft_created(source_name)
+                logger.info(f"Draft created for {source_name}")
 
         # Record metrics
         SCRAPE_REQUESTS_TOTAL.labels(source_name=source_name, status="success").inc()

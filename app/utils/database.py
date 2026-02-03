@@ -35,6 +35,8 @@ class ContentDraft:
     status: str  # "pending", "approved", "rejected", "expired"
     diff_summary: Optional[str] = None
     previous_version_id: Optional[int] = None
+    quality_score: Optional[float] = None  # 0.0-100.0
+    quality_details: Optional[str] = None  # JSON assessment details
 
 
 @dataclass
@@ -105,6 +107,8 @@ class DatabaseProtocol(Protocol):
         content_hash: str,
         diff_summary: Optional[str] = None,
         previous_version_id: Optional[int] = None,
+        quality_score: Optional[float] = None,
+        quality_details: Optional[str] = None,
     ) -> ContentDraft: ...
 
     def get_pending_drafts(self, source_name: Optional[str] = None) -> list[ContentDraft]: ...
@@ -232,6 +236,8 @@ class Database:
                     status TEXT DEFAULT 'pending',
                     diff_summary TEXT,
                     previous_version_id INTEGER,
+                    quality_score REAL,
+                    quality_details TEXT,
                     FOREIGN KEY (previous_version_id) REFERENCES content_versions(id)
                 );
 
@@ -374,6 +380,8 @@ class Database:
         content_hash: str,
         diff_summary: Optional[str] = None,
         previous_version_id: Optional[int] = None,
+        quality_score: Optional[float] = None,
+        quality_details: Optional[str] = None,
     ) -> ContentDraft:
         """Create a new draft for review."""
         now = datetime.now().isoformat()
@@ -387,9 +395,9 @@ class Database:
 
             cursor = conn.execute(
                 """INSERT INTO content_drafts
-                   (source_name, content, content_hash, created_at, status, diff_summary, previous_version_id)
-                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-                (source_name, content, content_hash, now, diff_summary, previous_version_id)
+                   (source_name, content, content_hash, created_at, status, diff_summary, previous_version_id, quality_score, quality_details)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+                (source_name, content, content_hash, now, diff_summary, previous_version_id, quality_score, quality_details)
             )
 
             return ContentDraft(
@@ -401,6 +409,8 @@ class Database:
                 status="pending",
                 diff_summary=diff_summary,
                 previous_version_id=previous_version_id,
+                quality_score=quality_score,
+                quality_details=quality_details,
             )
 
     def get_pending_drafts(self, source_name: Optional[str] = None) -> list[ContentDraft]:

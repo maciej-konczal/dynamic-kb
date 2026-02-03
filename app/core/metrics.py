@@ -150,6 +150,29 @@ DRAFTS_PENDING = Gauge(
 )
 
 # =============================================================================
+# Quality Scoring Metrics
+# =============================================================================
+
+DRAFT_QUALITY_SCORES = Histogram(
+    "dynamic_kb_draft_quality_scores",
+    "Distribution of draft quality scores",
+    ["source_name"],
+    buckets=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100),
+)
+
+DRAFTS_AUTO_APPROVED_TOTAL = Counter(
+    "dynamic_kb_drafts_auto_approved_total",
+    "Total number of drafts auto-approved due to high quality score",
+    ["source_name"],
+)
+
+DRAFTS_AUTO_REJECTED_TOTAL = Counter(
+    "dynamic_kb_drafts_auto_rejected_total",
+    "Total number of drafts auto-rejected due to low quality score",
+    ["source_name"],
+)
+
+# =============================================================================
 # Health Check Metrics
 # =============================================================================
 
@@ -417,6 +440,24 @@ def set_pending_drafts(source_name: str, count: int):
     """Set the number of pending drafts for a source."""
     DRAFTS_PENDING.labels(source_name=source_name).set(count)
     _persist_metric("drafts_pending", float(count), {"source_name": source_name})
+
+
+def record_draft_quality_score(source_name: str, score: float):
+    """Record a draft quality score."""
+    DRAFT_QUALITY_SCORES.labels(source_name=source_name).observe(score)
+    _persist_metric("draft_quality_scores", score, {"source_name": source_name})
+
+
+def record_draft_auto_approved(source_name: str):
+    """Record a draft auto-approval."""
+    DRAFTS_AUTO_APPROVED_TOTAL.labels(source_name=source_name).inc()
+    _persist_metric("drafts_auto_approved_total", 1.0, {"source_name": source_name})
+
+
+def record_draft_auto_rejected(source_name: str):
+    """Record a draft auto-rejection."""
+    DRAFTS_AUTO_REJECTED_TOTAL.labels(source_name=source_name).inc()
+    _persist_metric("drafts_auto_rejected_total", 1.0, {"source_name": source_name})
 
 
 def record_health_check(component: str, healthy: bool, duration: float):

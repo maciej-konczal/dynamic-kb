@@ -47,6 +47,8 @@ class SupabaseDatabase:
             status=row["status"],
             diff_summary=row.get("diff_summary"),
             previous_version_id=row.get("previous_version_id"),
+            quality_score=row.get("quality_score"),
+            quality_details=row.get("quality_details"),
         )
 
     def _row_to_execution(self, row: dict) -> ExecutionRecord:
@@ -172,6 +174,8 @@ class SupabaseDatabase:
         content_hash: str,
         diff_summary: Optional[str] = None,
         previous_version_id: Optional[int] = None,
+        quality_score: Optional[float] = None,
+        quality_details: Optional[str] = None,
     ) -> ContentDraft:
         """Create a new draft for review."""
         now = self._now_iso()
@@ -190,6 +194,8 @@ class SupabaseDatabase:
             "status": "pending",
             "diff_summary": diff_summary,
             "previous_version_id": previous_version_id,
+            "quality_score": quality_score,
+            "quality_details": quality_details,
         }
 
         result = self.client.table("content_drafts").insert(data).execute()

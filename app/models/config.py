@@ -55,6 +55,9 @@ class SettingsConfig(BaseModel):
     dry_run: bool = Field(default=False, description="Run without making external API calls")
     data_dir: str = Field(default="data", description="Directory for data storage")
     output_dir: str = Field(default="data/outputs", description="Directory for output files")
+    quality_scoring_enabled: bool = Field(default=False, description="Enable LLM-based quality scoring for scraped content")
+    quality_auto_approve_threshold: int = Field(default=80, ge=0, le=100, description="Auto-approve drafts with quality score >= this value (0-100)")
+    quality_auto_reject_threshold: int = Field(default=30, ge=0, le=100, description="Auto-reject drafts with quality score <= this value (0-100)")
 
 
 class AppConfig(BaseModel):
