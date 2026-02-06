@@ -3,7 +3,10 @@
 import streamlit as st
 import yaml
 
-from app.models.config import AppConfig, SourceConfig, ScrapingConfig, PromptsConfig, ElevenLabsConfig, save_config
+from app.models.config import (
+    AppConfig, SourceConfig, ScrapingConfig, PromptsConfig, ElevenLabsConfig,
+    InventoryConfig, DEFAULT_INVENTORY_FIELDS, DEFAULT_SUMMARY_FIELDS, save_config,
+)
 from app.core.scheduler import validate_cron_expression, get_next_run_time, get_cron_description
 
 
@@ -54,6 +57,15 @@ def render_source_form(config: AppConfig, config_path: str, source: SourceConfig
                 "Enabled",
                 value=source.enabled if is_edit else True,
                 key=f"{prefix}enabled",
+            )
+            mode_options = ["generic", "inventory"]
+            mode_index = mode_options.index(source.mode) if is_edit else 0
+            mode = st.selectbox(
+                "Processing Mode",
+                options=mode_options,
+                index=mode_index,
+                key=f"{prefix}mode",
+                help="Generic: combine pages into one cleaned document. Inventory: extract structured data per page and generate a report.",
             )
 
         with col2:
@@ -127,6 +139,36 @@ def render_source_form(config: AppConfig, config_path: str, source: SourceConfig
             help="Regex pattern to filter URLs (leave empty for no filtering)",
         )
 
+        # Inventory settings (shown when mode is inventory)
+        if mode == "inventory":
+            st.markdown("**Inventory Settings**")
+            inv = source.inventory if is_edit and source.inventory else InventoryConfig()
+            report_title = st.text_input(
+                "Report Title",
+                value=inv.report_title,
+                key=f"{prefix}report_title",
+                help="Title for the generated inventory report",
+            )
+            inventory_fields = st.text_area(
+                "Extraction Fields (comma-separated)",
+                value=", ".join(inv.fields),
+                key=f"{prefix}inv_fields",
+                help="Fields to extract from each page",
+            )
+            inventory_summary_fields = st.text_area(
+                "Summary Table Fields (comma-separated)",
+                value=", ".join(inv.summary_fields),
+                key=f"{prefix}inv_summary_fields",
+                help="Fields to show in the overview table",
+            )
+            extraction_prompt = st.text_area(
+                "Extraction Prompt (optional)",
+                value=source.prompts.extraction_prompt if is_edit and source.prompts.extraction_prompt else "",
+                key=f"{prefix}extraction_prompt",
+                help="Custom prompt for structured extraction (use {fields} and {content} placeholders)",
+                height=100,
+            )
+
         st.markdown("**Custom Prompts (optional)**")
         link_prompt = st.text_area(
             "Link Extraction Prompt",
@@ -157,11 +199,29 @@ def render_source_form(config: AppConfig, config_path: str, source: SourceConfig
                     st.error(f"Invalid schedule: {error}")
                     return
 
+            # Build inventory config if mode is inventory
+            inv_config = None
+            if mode == "inventory":
+                inv_config = InventoryConfig(
+                    report_title=report_title,
+                    fields=[f.strip() for f in inventory_fields.split(",") if f.strip()],
+                    summary_fields=[f.strip() for f in inventory_summary_fields.split(",") if f.strip()],
+                )
+
+            # Build prompts config
+            prompts_kwargs = {
+                "link_extraction": link_prompt if link_prompt else None,
+                "content_cleaning": content_prompt if content_prompt else None,
+            }
+            if mode == "inventory" and extraction_prompt:
+                prompts_kwargs["extraction_prompt"] = extraction_prompt
+
             # Build source config
             new_source = SourceConfig(
                 name=name,
                 url=url,
                 enabled=enabled,
+                mode=mode,
                 schedule=schedule if schedule else None,
                 schedule_enabled=schedule_enabled,
                 scraping=ScrapingConfig(
@@ -170,10 +230,8 @@ def render_source_form(config: AppConfig, config_path: str, source: SourceConfig
                     url_pattern=url_pattern if url_pattern else None,
                     capture_screenshots=capture_screenshots,
                 ),
-                prompts=PromptsConfig(
-                    link_extraction=link_prompt if link_prompt else None,
-                    content_cleaning=content_prompt if content_prompt else None,
-                ),
+                prompts=PromptsConfig(**prompts_kwargs),
+                inventory=inv_config,
                 elevenlabs=ElevenLabsConfig(
                     agent_ids=[aid.strip() for aid in agent_ids.split("\n") if aid.strip()],
                     kb_prefix=kb_prefix,
@@ -199,6 +257,8 @@ def render_source_card(config: AppConfig, config_path: str, source: SourceConfig
             status_icon = "" if source.enabled else ""
             st.markdown(f"### {status_icon} {source.name}")
             st.markdown(f"**URL:** {source.url}")
+            if source.mode == "inventory":
+                st.markdown("**Mode:** Inventory")
             st.markdown(f"**KB Prefix:** `{source.elevenlabs.kb_prefix}`")
             st.markdown(f"**Agents:** {len(source.elevenlabs.agent_ids)} configured")
             if source.schedule:

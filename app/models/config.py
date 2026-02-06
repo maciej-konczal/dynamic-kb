@@ -1,10 +1,27 @@
 """Pydantic models for configuration validation."""
 
-from typing import Optional
+from typing import Literal, Optional
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, Field, HttpUrl
+
+
+DEFAULT_INVENTORY_FIELDS = [
+    "title", "price", "year", "mileage", "fuel", "engine", "power",
+    "transmission", "drive", "body_type", "color", "doors", "seats",
+    "condition", "description", "equipment",
+]
+
+DEFAULT_SUMMARY_FIELDS = ["title", "year", "mileage", "fuel", "price"]
+
+
+class InventoryConfig(BaseModel):
+    """Configuration for inventory-mode processing."""
+
+    report_title: str = Field(default="Inventory Report", description="Title for the generated report")
+    fields: list[str] = Field(default_factory=lambda: list(DEFAULT_INVENTORY_FIELDS), description="Fields to extract per item")
+    summary_fields: list[str] = Field(default_factory=lambda: list(DEFAULT_SUMMARY_FIELDS), description="Fields for overview table")
 
 
 class ScrapingConfig(BaseModel):
@@ -22,6 +39,7 @@ class PromptsConfig(BaseModel):
 
     link_extraction: Optional[str] = Field(default=None, description="Custom prompt for link extraction")
     content_cleaning: Optional[str] = Field(default=None, description="Custom prompt for content cleaning")
+    extraction_prompt: Optional[str] = Field(default=None, description="Custom prompt for structured extraction in inventory mode (use {fields} and {content} placeholders)")
 
 
 class ElevenLabsConfig(BaseModel):
@@ -39,10 +57,12 @@ class SourceConfig(BaseModel):
     name: str = Field(description="Human-readable name for the source")
     url: HttpUrl = Field(description="URL to scrape")
     enabled: bool = Field(default=True, description="Whether this source is active")
+    mode: Literal["generic", "inventory"] = Field(default="generic", description="Processing mode: generic (default) or inventory")
     schedule: Optional[str] = Field(default=None, description="Cron expression for scheduling")
     schedule_enabled: bool = Field(default=True, description="Whether scheduled runs are enabled (allows pausing without removing schedule)")
     scraping: ScrapingConfig = Field(default_factory=ScrapingConfig)
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
+    inventory: Optional[InventoryConfig] = Field(default=None, description="Inventory mode configuration (only used when mode='inventory')")
     elevenlabs: ElevenLabsConfig
 
 

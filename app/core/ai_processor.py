@@ -1,6 +1,7 @@
 """AI content processing module using Google Gemini."""
 
 import asyncio
+import json
 import re
 import base64
 from typing import Optional
@@ -46,6 +47,20 @@ CRITICAL INSTRUCTIONS:
 6. Format the output as clean, readable markdown suitable for a voice assistant knowledge base.
 
 Markdown Content:
+{content}
+"""
+
+    DEFAULT_STRUCTURED_EXTRACTION_PROMPT = """Extract structured data from this page content.
+
+Return a JSON object with ONLY these fields: {fields}
+
+Rules:
+- Return ONLY valid JSON, no extra text or markdown formatting.
+- If a field is not found, use an empty string "" for text fields or [] for list fields.
+- The "equipment" field (if requested) should be a JSON array of strings.
+- Extract values exactly as shown on the page (keep original language, units, formatting).
+
+Page content:
 {content}
 """
 
@@ -339,3 +354,129 @@ Markdown Content:
                 AI_DURATION_SECONDS.labels(operation=operation, model=self.model).observe(duration)
                 logger.error(f"Error cleaning content: {e}")
                 raise AIProcessorError(f"Failed to clean content: {e}") from e
+
+    async def extract_structured(
+        self,
+        content: str,
+        url: str,
+        fields: list[str],
+        custom_prompt: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> dict:
+        """Extract structured JSON data from a single page's content.
+
+        Args:
+            content: Markdown content of the page.
+            url: Source URL of the page.
+            fields: List of field names to extract.
+            custom_prompt: Optional custom prompt template (use {fields} and {content} placeholders).
+            session_id: Optional Langfuse session ID.
+
+        Returns:
+            Dict with extracted fields.
+        """
+        import time
+        start_time = time.time()
+        operation = "extract_structured"
+
+        prompt_template = custom_prompt or self.DEFAULT_STRUCTURED_EXTRACTION_PROMPT
+        prompt = prompt_template.format(
+            fields=", ".join(fields),
+            content=content[:50000],
+        )
+
+        logger.info(f"Extracting structured data from {url}")
+
+        with LangfuseTrace(
+            name="extract_structured",
+            session_id=session_id,
+            metadata={"url": url, "content_length": len(content), "fields": fields},
+            tags=["ai", "structured_extraction"],
+        ) as trace:
+            try:
+                with trace.generation(
+                    name="gemini_extract_structured",
+                    model=self.model,
+                    input=prompt[:1000] + "..." if len(prompt) > 1000 else prompt,
+                    metadata={"full_prompt_length": len(prompt), "fields": fields},
+                ) as gen:
+                    response = await self._call_with_retry(
+                        self.client.models.generate_content,
+                        operation,
+                        model=self.model,
+                        contents=prompt,
+                    )
+
+                    raw_text = response.text if response.text else "{}"
+
+                    # Extract and record token usage
+                    usage = self._extract_token_usage(response)
+                    if usage:
+                        record_ai_tokens(
+                            operation=operation,
+                            model=self.model,
+                            prompt_tokens=usage.get('prompt_tokens', 0),
+                            completion_tokens=usage.get('completion_tokens', 0),
+                        )
+                        gen.set_output(raw_text[:500] + "..." if len(raw_text) > 500 else raw_text, usage=usage)
+                    else:
+                        gen.set_output(raw_text[:500] + "..." if len(raw_text) > 500 else raw_text)
+
+                # Parse JSON response
+                result = self._parse_json_response(raw_text, fields)
+
+                logger.info(f"Structured extraction successful for {url}")
+
+                duration = time.time() - start_time
+                AI_REQUESTS_TOTAL.labels(operation=operation, model=self.model, status="success").inc()
+                AI_DURATION_SECONDS.labels(operation=operation, model=self.model).observe(duration)
+
+                if is_langfuse_enabled():
+                    flush_langfuse()
+
+                return result
+
+            except AIProcessorError:
+                duration = time.time() - start_time
+                AI_REQUESTS_TOTAL.labels(operation=operation, model=self.model, status="error").inc()
+                AI_DURATION_SECONDS.labels(operation=operation, model=self.model).observe(duration)
+                raise
+            except Exception as e:
+                duration = time.time() - start_time
+                AI_REQUESTS_TOTAL.labels(operation=operation, model=self.model, status="error").inc()
+                AI_DURATION_SECONDS.labels(operation=operation, model=self.model).observe(duration)
+                logger.error(f"Error extracting structured data: {e}")
+                raise AIProcessorError(f"Failed to extract structured data: {e}") from e
+
+    @staticmethod
+    def _parse_json_response(raw_text: str, fields: list[str]) -> dict:
+        """Parse a JSON response from Gemini, with fallback for code fences.
+
+        Args:
+            raw_text: Raw text response from the model.
+            fields: Expected field names.
+
+        Returns:
+            Dict with extracted fields (missing fields filled with defaults).
+        """
+        # Strip markdown code fences if present
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            # Remove opening fence (e.g. ```json)
+            cleaned = re.sub(r"^```\w*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned)
+            cleaned = cleaned.strip()
+
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to parse JSON response, returning empty dict. Raw: {raw_text[:200]}")
+            parsed = {}
+
+        # Ensure all requested fields are present with defaults
+        result = {}
+        for field in fields:
+            value = parsed.get(field, "" if field != "equipment" else [])
+            result[field] = value
+
+        return result

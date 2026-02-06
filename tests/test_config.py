@@ -12,7 +12,10 @@ from app.models.config import (
     ScrapingConfig,
     PromptsConfig,
     ElevenLabsConfig,
+    InventoryConfig,
     SettingsConfig,
+    DEFAULT_INVENTORY_FIELDS,
+    DEFAULT_SUMMARY_FIELDS,
     load_config,
     save_config,
 )
@@ -45,6 +48,40 @@ class TestScrapingConfig:
         assert config.capture_screenshots is False
 
 
+class TestPromptsConfig:
+    """Test PromptsConfig model."""
+
+    def test_default_values(self):
+        """Test default values are set correctly."""
+        config = PromptsConfig()
+
+        assert config.link_extraction is None
+        assert config.content_cleaning is None
+        assert config.extraction_prompt is None
+
+    def test_extraction_prompt(self):
+        """Test extraction_prompt field accepts custom value."""
+        config = PromptsConfig(
+            extraction_prompt="Extract {fields} from:\n{content}",
+        )
+
+        assert config.extraction_prompt == "Extract {fields} from:\n{content}"
+        assert config.link_extraction is None
+        assert config.content_cleaning is None
+
+    def test_all_prompts(self):
+        """Test all prompt fields set together."""
+        config = PromptsConfig(
+            link_extraction="custom link prompt",
+            content_cleaning="custom cleaning prompt",
+            extraction_prompt="custom extraction prompt",
+        )
+
+        assert config.link_extraction == "custom link prompt"
+        assert config.content_cleaning == "custom cleaning prompt"
+        assert config.extraction_prompt == "custom extraction prompt"
+
+
 class TestElevenLabsConfig:
     """Test ElevenLabsConfig model."""
 
@@ -67,6 +104,30 @@ class TestElevenLabsConfig:
         assert config.kb_prefix == "MY_KB"
 
 
+class TestInventoryConfig:
+    """Test InventoryConfig model."""
+
+    def test_default_values(self):
+        """Test default values are set correctly."""
+        config = InventoryConfig()
+
+        assert config.report_title == "Inventory Report"
+        assert config.fields == DEFAULT_INVENTORY_FIELDS
+        assert config.summary_fields == DEFAULT_SUMMARY_FIELDS
+
+    def test_custom_values(self):
+        """Test custom values are accepted."""
+        config = InventoryConfig(
+            report_title="Custom Report",
+            fields=["name", "price"],
+            summary_fields=["name"],
+        )
+
+        assert config.report_title == "Custom Report"
+        assert config.fields == ["name", "price"]
+        assert config.summary_fields == ["name"]
+
+
 class TestSourceConfig:
     """Test SourceConfig model."""
 
@@ -81,6 +142,38 @@ class TestSourceConfig:
         assert config.name == "Test Source"
         assert "example.com" in str(config.url)
         assert config.enabled is True
+
+    def test_default_mode_is_generic(self):
+        """Test that mode defaults to 'generic'."""
+        config = SourceConfig(
+            name="Test",
+            url="https://example.com",
+            elevenlabs=ElevenLabsConfig(kb_prefix="TEST"),
+        )
+        assert config.mode == "generic"
+        assert config.inventory is None
+
+    def test_inventory_mode(self):
+        """Test inventory mode configuration."""
+        config = SourceConfig(
+            name="Inventory Source",
+            url="https://example.com/inventory",
+            mode="inventory",
+            inventory=InventoryConfig(report_title="Cars"),
+            elevenlabs=ElevenLabsConfig(kb_prefix="INV"),
+        )
+
+        assert config.mode == "inventory"
+        assert config.inventory.report_title == "Cars"
+
+    def test_backward_compatibility_no_mode_field(self):
+        """Test that configs without mode field work (defaults to generic)."""
+        config = SourceConfig(
+            name="Old Source",
+            url="https://example.com",
+            elevenlabs=ElevenLabsConfig(kb_prefix="OLD"),
+        )
+        assert config.mode == "generic"
 
     def test_full_config(self, sample_source_config):
         """Test full source configuration."""

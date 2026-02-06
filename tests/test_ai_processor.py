@@ -302,3 +302,118 @@ class TestCleanContent:
                             content="# Content",
                             start_url="https://example.com",
                         )
+
+
+class TestParseJsonResponse:
+    """Test the JSON response parsing helper."""
+
+    def test_clean_json(self):
+        """Should parse clean JSON."""
+        raw = '{"title": "VW Golf", "price": "50000 PLN"}'
+        result = AIProcessor._parse_json_response(raw, ["title", "price"])
+
+        assert result["title"] == "VW Golf"
+        assert result["price"] == "50000 PLN"
+
+    def test_json_with_code_fences(self):
+        """Should strip markdown code fences."""
+        raw = '```json\n{"title": "Audi A4", "year": "2021"}\n```'
+        result = AIProcessor._parse_json_response(raw, ["title", "year"])
+
+        assert result["title"] == "Audi A4"
+        assert result["year"] == "2021"
+
+    def test_missing_fields_get_defaults(self):
+        """Should fill missing fields with empty string defaults."""
+        raw = '{"title": "Car"}'
+        result = AIProcessor._parse_json_response(raw, ["title", "price", "year"])
+
+        assert result["title"] == "Car"
+        assert result["price"] == ""
+        assert result["year"] == ""
+
+    def test_equipment_field_defaults_to_empty_list(self):
+        """Should default equipment to empty list when missing."""
+        raw = '{"title": "Car"}'
+        result = AIProcessor._parse_json_response(raw, ["title", "equipment"])
+
+        assert result["title"] == "Car"
+        assert result["equipment"] == []
+
+    def test_invalid_json_returns_empty(self):
+        """Should return empty defaults for invalid JSON."""
+        raw = "This is not JSON at all"
+        result = AIProcessor._parse_json_response(raw, ["title", "price"])
+
+        assert result["title"] == ""
+        assert result["price"] == ""
+
+    def test_json_with_extra_whitespace(self):
+        """Should handle JSON with extra whitespace."""
+        raw = '  \n  {"title": "BMW"}  \n  '
+        result = AIProcessor._parse_json_response(raw, ["title"])
+
+        assert result["title"] == "BMW"
+
+
+class TestExtractStructured:
+    """Test the extract_structured method."""
+
+    @pytest.mark.asyncio
+    async def test_returns_extracted_data(self):
+        """Should return structured data from AI response."""
+        mock_response = _create_mock_response('{"title": "VW Golf", "price": "50000 PLN", "year": "2020"}')
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content = MagicMock(return_value=mock_response)
+
+        with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
+            with patch("app.core.ai_processor.flush_langfuse"):
+                processor = AIProcessor(api_key="test-key")
+                result = await processor.extract_structured(
+                    content="# Car listing page content",
+                    url="https://example.com/car1",
+                    fields=["title", "price", "year"],
+                )
+
+        assert result["title"] == "VW Golf"
+        assert result["price"] == "50000 PLN"
+        assert result["year"] == "2020"
+
+    @pytest.mark.asyncio
+    async def test_handles_code_fenced_response(self):
+        """Should handle JSON wrapped in code fences."""
+        mock_response = _create_mock_response('```json\n{"title": "Audi"}\n```')
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content = MagicMock(return_value=mock_response)
+
+        with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
+            with patch("app.core.ai_processor.flush_langfuse"):
+                processor = AIProcessor(api_key="test-key")
+                result = await processor.extract_structured(
+                    content="# Page",
+                    url="https://example.com/car",
+                    fields=["title"],
+                )
+
+        assert result["title"] == "Audi"
+
+    @pytest.mark.asyncio
+    async def test_raises_on_api_failure(self):
+        """Should raise AIProcessorError on API failure."""
+        mock_client = MagicMock()
+        mock_client.models.generate_content = MagicMock(
+            side_effect=Exception("API Error")
+        )
+
+        with patch("app.core.ai_processor.genai.Client", return_value=mock_client):
+            with patch("asyncio.sleep", new=AsyncMock()):
+                with patch("app.core.ai_processor.record_ai_retry"):
+                    processor = AIProcessor(api_key="test-key", max_retries=1)
+                    with pytest.raises(AIProcessorError):
+                        await processor.extract_structured(
+                            content="# Content",
+                            url="https://example.com",
+                            fields=["title"],
+                        )

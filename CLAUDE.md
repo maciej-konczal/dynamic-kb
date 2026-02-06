@@ -44,7 +44,7 @@ docker-compose up -d
 2. Crawl URL with crawl4ai (Scraper)
 3. Extract sub-page links via Gemini (AIProcessor)
 4. Crawl sub-pages up to max_pages limit
-5. Clean content via Gemini with multimodal vision
+5. Clean content via Gemini with multimodal vision (generic mode) OR extract structured JSON per page (inventory mode)
 6. Check for changes (ContentDiffer)
 7. Save as draft for review
 8. On approval: upload to ElevenLabs KB API
@@ -61,6 +61,8 @@ docker-compose up -d
 - `scheduler.py` - `SourceScheduler` singleton using APScheduler with SQLite persistence for cron-based job scheduling
 - `scheduled_tasks.py` - Task wrappers that run during scheduled jobs (scrape → create draft)
 - `differ.py` - `ContentDiffer` for content hashing and change detection
+- `report_generator.py` - `generate_inventory_report()` for formatting structured extraction results into markdown reports
+- `quality_assessor.py` - `QualityAssessor` for LLM-based content quality scoring with auto-approve/reject thresholds
 - `exceptions.py` - Custom exception hierarchy (`DynamicKBError`, `ScraperError`, `AIProcessorError`, `ElevenLabsError`, `SchedulerError`, `ConfigurationError`)
 - `observability.py` - Langfuse integration with `LangfuseTrace`, `LangfuseSpan`, `LangfuseGeneration` context managers
 - `metrics.py` / `metrics_storage.py` - Prometheus-style metrics with DB persistence
@@ -83,10 +85,12 @@ docker-compose up -d
 `config.yaml` defines sources and settings. See `app/models/config.py` for Pydantic models.
 
 Key source fields:
+- `mode` - Processing mode: `"generic"` (default) or `"inventory"` (structured extraction per page)
 - `schedule` - Cron expression (e.g., `"0 8 * * *"` for daily at 8am)
 - `schedule_enabled` - Toggle scheduling without removing the cron expression
 - `scraping.url_pattern` - Regex to filter crawled URLs
 - `scraping.include_urls` - Additional URLs to always include
+- `prompts.extraction_prompt` - Custom prompt for inventory mode structured extraction (uses `{fields}` and `{content}` placeholders)
 - `elevenlabs.agent_ids` - Agents to update with new KB content
 
 ### External Integrations

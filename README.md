@@ -19,6 +19,7 @@ Dynamic-KB automatically crawls websites, extracts and cleans content using AI, 
 - **Version History** - SQLite/Supabase storage with full version history and rollback
 - **ElevenLabs Integration** - Automatic KB upload, RAG indexing, and agent updates
 - **Observability** - LLM tracing with Langfuse, metrics with Prometheus, health monitoring
+- **Inventory Mode** - Extract structured data per page (e.g., car listings) and generate formatted reports
 - **Enterprise Ready** - Structured logging, retries with exponential backoff, custom exceptions
 - **Web UI** - Streamlit dashboard for easy management
 - **Cloud Ready** - One-click deploy to Railway, Render, or Docker
@@ -99,6 +100,55 @@ docker-compose up -d
 4. **Push** - Upload to ElevenLabs Knowledge Base
 5. **Index** - Trigger RAG indexing for semantic search
 6. **Update** - Link new KB to your voice agents
+
+## Inventory Mode
+
+For sources where each sub-page represents a distinct item (e.g., car listings, product pages, real estate), **inventory mode** extracts structured data per page and generates a formatted report instead of combining all pages into one document.
+
+### How It Works
+
+1. Crawl the source and discover sub-page links (same as generic mode)
+2. For each sub-page, extract structured JSON fields using Gemini (e.g., title, price, mileage)
+3. Generate a markdown report with a summary table and per-item detail sections
+4. Save as draft for review, then push to ElevenLabs
+
+### Example: Car Dealership
+
+```yaml
+sources:
+  - name: "AutoMax Inventory"
+    url: "https://automax-dealer.com/cars"
+    mode: "inventory"
+    scraping:
+      max_depth: 1
+      max_pages: 20
+      url_pattern: "automax-dealer\\.com/cars/"
+    inventory:
+      report_title: "AutoMax Current Inventory"
+      fields:
+        - title
+        - price
+        - year
+        - mileage
+        - fuel
+        - engine
+        - transmission
+        - color
+        - description
+      summary_fields:
+        - title
+        - year
+        - mileage
+        - price
+    elevenlabs:
+      agent_ids:
+        - "agent_automax"
+      kb_prefix: "AUTOMAX_INV"
+```
+
+### Scaling Up
+
+Add more dealers (or any item-based source) by adding more entries to `config.yaml`. Each source scrapes independently and produces its own report. Use scheduling to keep inventories fresh automatically.
 
 ## Configuration
 
@@ -296,6 +346,8 @@ dynamic-kb/
 │   │   ├── scheduler.py     # APScheduler with SQLite persistence
 │   │   ├── scheduled_tasks.py # Task wrappers for scheduler
 │   │   ├── differ.py        # Change detection
+│   │   ├── report_generator.py # Inventory report formatting
+│   │   ├── quality_assessor.py # LLM-based content quality scoring
 │   │   ├── exceptions.py    # Custom exception types
 │   │   ├── logging.py       # Structured logging
 │   │   ├── metrics.py       # Prometheus metrics
@@ -328,6 +380,7 @@ dynamic-kb/
 - **Customer Support Bots** - Keep FAQ and documentation up-to-date
 - **News Assistants** - Sync latest news articles to voice agents
 - **Product Assistants** - Update product catalogs and specs
+- **Car Dealership Inventory** - Extract structured listings and generate inventory reports for voice agents
 - **Internal Tools** - Sync company wikis and documentation
 
 ## Contributing

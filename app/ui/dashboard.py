@@ -7,13 +7,14 @@ from typing import Optional
 
 import streamlit as st
 
-from app.models.config import AppConfig, SourceConfig
+from app.models.config import AppConfig, SourceConfig, InventoryConfig
 from app.utils.storage import Storage
 from app.utils.database import ContentDraft
 from app.core.scraper import Scraper
 from app.core.ai_processor import AIProcessor
 from app.core.elevenlabs import ElevenLabsClient, KBDocument
 from app.core.differ import ContentDiffer
+from app.core.report_generator import generate_inventory_report
 from app.core.exceptions import ScraperError, AIProcessorError, ElevenLabsError
 from app.core.scheduler import get_scheduler, get_next_run_time, get_cron_description
 from app.core.quality_assessor import QualityAssessor, QualityResult
@@ -60,15 +61,41 @@ async def scrape_source(
     # Step 3: Crawl sub-pages
     st.write("Crawling sub-pages...")
     results = await scraper.crawl_with_subpages(str(source.url), all_links)
-    combined_content, screenshots = scraper.combine_results(results)
 
-    # Step 4: Clean content
-    st.write("Cleaning and processing content...")
-    clean_content = await ai_processor.clean_content(
-        combined_content,
-        str(source.url),
-        screenshots,
-    )
+    # Step 4: Process content (branch by mode)
+    if source.mode == "inventory":
+        inv_config = source.inventory or InventoryConfig()
+        st.write(f"Extracting structured data from {len(results)} pages...")
+        items = []
+        custom_prompt = source.prompts.extraction_prompt
+        for result in results:
+            if result.success and result.markdown:
+                try:
+                    item = await ai_processor.extract_structured(
+                        result.markdown,
+                        result.url,
+                        inv_config.fields,
+                        custom_prompt=custom_prompt,
+                    )
+                    item["url"] = result.url
+                    items.append(item)
+                except AIProcessorError as e:
+                    st.write(f"Skipped {result.url}: {e}")
+        st.write(f"Extracted {len(items)} items, generating report...")
+        clean_content = generate_inventory_report(
+            items,
+            title=inv_config.report_title,
+            summary_fields=inv_config.summary_fields,
+            all_fields=inv_config.fields,
+        )
+    else:
+        combined_content, screenshots = scraper.combine_results(results)
+        st.write("Cleaning and processing content...")
+        clean_content = await ai_processor.clean_content(
+            combined_content,
+            str(source.url),
+            screenshots,
+        )
 
     # Compute hash
     content_hash = ContentDiffer.compute_hash(clean_content)
