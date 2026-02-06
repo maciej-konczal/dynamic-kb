@@ -13,10 +13,14 @@ Dynamic-KB automatically crawls websites, extracts and cleans content using AI, 
 
 - **Web Scraping** - Crawl websites with configurable depth using [crawl4ai](https://github.com/unclecode/crawl4ai)
 - **AI Content Processing** - Clean and deduplicate content with Google Gemini (multimodal vision support)
+- **Built-in Scheduler** - Cron-based scheduling with SQLite persistence, survives restarts
 - **Preview Before Push** - Review scraped content and compare with previous versions before syncing
 - **Change Detection** - Only push updates when content actually changes
-- **Version History** - SQLite-backed storage with full version history and rollback
+- **Version History** - SQLite/Supabase storage with full version history and rollback
 - **ElevenLabs Integration** - Automatic KB upload, RAG indexing, and agent updates
+- **Observability** - LLM tracing with Langfuse, metrics with Prometheus, health monitoring
+- **Inventory Mode** - Extract structured data per page (e.g., car listings) and generate formatted reports
+- **Enterprise Ready** - Structured logging, retries with exponential backoff, custom exceptions
 - **Web UI** - Streamlit dashboard for easy management
 - **Cloud Ready** - One-click deploy to Railway, Render, or Docker
 
@@ -97,6 +101,55 @@ docker-compose up -d
 5. **Index** - Trigger RAG indexing for semantic search
 6. **Update** - Link new KB to your voice agents
 
+## Inventory Mode
+
+For sources where each sub-page represents a distinct item (e.g., car listings, product pages, real estate), **inventory mode** extracts structured data per page and generates a formatted report instead of combining all pages into one document.
+
+### How It Works
+
+1. Crawl the source and discover sub-page links (same as generic mode)
+2. For each sub-page, extract structured JSON fields using Gemini (e.g., title, price, mileage)
+3. Generate a markdown report with a summary table and per-item detail sections
+4. Save as draft for review, then push to ElevenLabs
+
+### Example: Car Dealership
+
+```yaml
+sources:
+  - name: "AutoMax Inventory"
+    url: "https://automax-dealer.com/cars"
+    mode: "inventory"
+    scraping:
+      max_depth: 1
+      max_pages: 20
+      url_pattern: "automax-dealer\\.com/cars/"
+    inventory:
+      report_title: "AutoMax Current Inventory"
+      fields:
+        - title
+        - price
+        - year
+        - mileage
+        - fuel
+        - engine
+        - transmission
+        - color
+        - description
+      summary_fields:
+        - title
+        - year
+        - mileage
+        - price
+    elevenlabs:
+      agent_ids:
+        - "agent_automax"
+      kb_prefix: "AUTOMAX_INV"
+```
+
+### Scaling Up
+
+Add more dealers (or any item-based source) by adding more entries to `config.yaml`. Each source scrapes independently and produces its own report. Use scheduling to keep inventories fresh automatically.
+
 ## Configuration
 
 ### config.yaml
@@ -106,6 +159,8 @@ sources:
   - name: "My Website News"
     url: "https://example.com/news"
     enabled: true
+    schedule: "0 8 * * *"       # Cron expression (daily at 8am)
+    schedule_enabled: true      # Can pause without removing schedule
     scraping:
       max_depth: 1
       max_pages: 5
@@ -120,6 +175,49 @@ settings:
   change_detection: true
 ```
 
+### Scheduling
+
+Dynamic-KB includes a built-in scheduler that runs inside the Streamlit process. Jobs persist in SQLite and survive app restarts.
+
+#### Adding a Schedule
+
+Add a `schedule` field to any source in `config.yaml`:
+
+```yaml
+sources:
+  - name: "Daily Docs Sync"
+    url: "https://docs.example.com"
+    schedule: "0 8 * * *"        # Daily at 8:00 AM
+    schedule_enabled: true       # Toggle without removing schedule
+    # ... rest of config
+```
+
+#### Common Cron Expressions
+
+| Expression | Description |
+|------------|-------------|
+| `0 8 * * *` | Daily at 8:00 AM |
+| `0 */2 * * *` | Every 2 hours |
+| `*/30 * * * *` | Every 30 minutes |
+| `0 9 * * 1` | Every Monday at 9:00 AM |
+| `0 0 1 * *` | First day of month at midnight |
+| `0 8 * * 1-5` | Weekdays at 8:00 AM |
+
+#### Managing Schedules
+
+Use the **Scheduler** page in the web UI to:
+- View all scheduled jobs with next run times
+- Pause/resume individual jobs or all jobs
+- Sync scheduler with config changes
+- Start/stop the scheduler
+
+#### How Scheduled Jobs Work
+
+1. When a scheduled job runs, it scrapes the source automatically
+2. If content changed, it creates a **draft** (not auto-pushed to ElevenLabs)
+3. You review and approve drafts on the **Dashboard** page
+4. Missed jobs during downtime are recovered when the app restarts (up to 1 hour late)
+
 ### Environment Variables
 
 | Variable | Description | Required |
@@ -129,6 +227,10 @@ settings:
 | `CONFIG_PATH` | Path to config.yaml | No |
 | `SUPABASE_URL` | Supabase project URL | No |
 | `SUPABASE_KEY` | Supabase Publishable key | No |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key for LLM tracing | No |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key | No |
+| `LANGFUSE_HOST` | Langfuse host URL (default: cloud.langfuse.com) | No |
+| `LOG_LEVEL` | Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO) | No |
 
 ### Database Options
 
@@ -180,11 +282,22 @@ CREATE TABLE execution_history (
     version_id INTEGER REFERENCES content_versions(id)
 );
 
+-- metrics_events table (for observability)
+CREATE TABLE metrics_events (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metric_name TEXT NOT NULL,
+    metric_value DOUBLE PRECISION NOT NULL,
+    labels JSONB DEFAULT '{}'::jsonb
+);
+
 -- Indexes for performance
 CREATE INDEX idx_versions_source ON content_versions(source_name);
 CREATE INDEX idx_drafts_source ON content_drafts(source_name);
 CREATE INDEX idx_drafts_status ON content_drafts(status);
 CREATE INDEX idx_history_source ON execution_history(source_name);
+CREATE INDEX idx_metrics_name ON metrics_events(metric_name);
+CREATE INDEX idx_metrics_timestamp ON metrics_events(timestamp);
 ```
 
 3. Copy your credentials from Project Settings → API and add to `.env`:
@@ -194,6 +307,31 @@ SUPABASE_KEY=your_supabase_publishable_key
 ```
 
 The app automatically uses Supabase when these variables are set.
+
+### Observability (Optional)
+
+Dynamic-KB includes enterprise-grade observability features:
+
+#### Langfuse (LLM Tracing)
+Track all AI calls with inputs, outputs, token usage, and latency.
+
+1. Create a free account at [cloud.langfuse.com](https://cloud.langfuse.com)
+2. Get your API keys from Settings → API Keys
+3. Add to `.env`:
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+#### Metrics (Prometheus-compatible)
+Application metrics are automatically persisted to your database (SQLite or Supabase) and displayed on the Health page. Tracked metrics include:
+- AI requests, retries, and token usage
+- Scraping operations and duration
+- ElevenLabs API calls
+- Knowledge base document operations
+- Health check status
+
+View metrics on the **Health** page in the web UI.
 
 ## Architecture
 
@@ -205,19 +343,31 @@ dynamic-kb/
 │   │   ├── scraper.py       # Web crawling (crawl4ai)
 │   │   ├── ai_processor.py  # Gemini content processing
 │   │   ├── elevenlabs.py    # ElevenLabs API client
-│   │   └── differ.py        # Change detection
+│   │   ├── scheduler.py     # APScheduler with SQLite persistence
+│   │   ├── scheduled_tasks.py # Task wrappers for scheduler
+│   │   ├── differ.py        # Change detection
+│   │   ├── report_generator.py # Inventory report formatting
+│   │   ├── quality_assessor.py # LLM-based content quality scoring
+│   │   ├── exceptions.py    # Custom exception types
+│   │   ├── logging.py       # Structured logging
+│   │   ├── metrics.py       # Prometheus metrics
+│   │   ├── metrics_storage.py # Metrics persistence
+│   │   └── observability.py # Langfuse LLM tracing
 │   ├── models/
 │   │   └── config.py        # Pydantic config models
 │   ├── ui/
 │   │   ├── dashboard.py     # Main dashboard
 │   │   ├── sources.py       # Source management
+│   │   ├── scheduler.py     # Scheduler management
 │   │   ├── history.py       # Version history
-│   │   └── settings.py      # Settings page
+│   │   ├── settings.py      # Settings page
+│   │   └── health.py        # Health & metrics page
 │   └── utils/
 │       ├── database.py      # SQLite backend
+│       ├── supabase_db.py   # Supabase backend
 │       └── storage.py       # Storage abstraction
 ├── data/
-│   └── kb_sync.db           # SQLite database
+│   └── kb_sync.db           # SQLite database (local)
 ├── config.yaml              # Source configuration
 ├── Dockerfile
 ├── docker-compose.yml
@@ -230,6 +380,7 @@ dynamic-kb/
 - **Customer Support Bots** - Keep FAQ and documentation up-to-date
 - **News Assistants** - Sync latest news articles to voice agents
 - **Product Assistants** - Update product catalogs and specs
+- **Car Dealership Inventory** - Extract structured listings and generate inventory reports for voice agents
 - **Internal Tools** - Sync company wikis and documentation
 
 ## Contributing

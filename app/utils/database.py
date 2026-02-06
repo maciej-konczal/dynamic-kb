@@ -1,8 +1,9 @@
 """SQLite database for content storage and versioning."""
 
+import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 from dataclasses import dataclass
@@ -34,6 +35,8 @@ class ContentDraft:
     status: str  # "pending", "approved", "rejected", "expired"
     diff_summary: Optional[str] = None
     previous_version_id: Optional[int] = None
+    quality_score: Optional[float] = None  # 0.0-100.0
+    quality_details: Optional[str] = None  # JSON assessment details
 
 
 @dataclass
@@ -49,6 +52,32 @@ class ExecutionRecord:
     error: Optional[str] = None
     diff_summary: Optional[str] = None
     version_id: Optional[int] = None
+
+
+@dataclass
+class MetricEvent:
+    """A single metric event for persistence."""
+
+    id: int
+    timestamp: str
+    metric_name: str
+    metric_value: float
+    labels: dict  # JSON object with label key-values
+
+
+@dataclass
+class ScheduledJobState:
+    """State of a scheduled job for persistence."""
+
+    id: int
+    source_name: str
+    cron_expression: str
+    is_paused: bool
+    last_run_at: Optional[str]
+    last_run_status: Optional[str]
+    last_error: Optional[str]
+    created_at: str
+    updated_at: str
 
 
 @runtime_checkable
@@ -78,6 +107,8 @@ class DatabaseProtocol(Protocol):
         content_hash: str,
         diff_summary: Optional[str] = None,
         previous_version_id: Optional[int] = None,
+        quality_score: Optional[float] = None,
+        quality_details: Optional[str] = None,
     ) -> ContentDraft: ...
 
     def get_pending_drafts(self, source_name: Optional[str] = None) -> list[ContentDraft]: ...
@@ -108,6 +139,57 @@ class DatabaseProtocol(Protocol):
     def cleanup_old_versions(self, source_name: str, keep: int = 10) -> int: ...
 
     def cleanup_old_drafts(self, days: int = 7) -> int: ...
+
+    # Metrics
+    def save_metric(
+        self,
+        metric_name: str,
+        metric_value: float,
+        labels: Optional[dict] = None,
+    ) -> MetricEvent: ...
+
+    def get_metrics(
+        self,
+        metric_name: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+        limit: int = 1000,
+    ) -> list[MetricEvent]: ...
+
+    def get_metric_summary(
+        self,
+        metric_name: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+    ) -> dict: ...
+
+    def cleanup_old_metrics(self, days: int = 30) -> int: ...
+
+    # Scheduled Jobs
+    def save_job_state(
+        self,
+        source_name: str,
+        cron_expression: str,
+        is_paused: bool = False,
+    ) -> ScheduledJobState: ...
+
+    def get_job_state(self, source_name: str) -> Optional[ScheduledJobState]: ...
+
+    def get_all_job_states(self) -> list[ScheduledJobState]: ...
+
+    def update_job_state(
+        self,
+        source_name: str,
+        is_paused: Optional[bool] = None,
+        last_run_at: Optional[str] = None,
+        last_run_status: Optional[str] = None,
+        last_error: Optional[str] = None,
+        cron_expression: Optional[str] = None,
+    ) -> Optional[ScheduledJobState]: ...
+
+    def delete_job_state(self, source_name: str) -> bool: ...
 
 
 class Database:
@@ -154,6 +236,8 @@ class Database:
                     status TEXT DEFAULT 'pending',
                     diff_summary TEXT,
                     previous_version_id INTEGER,
+                    quality_score REAL,
+                    quality_details TEXT,
                     FOREIGN KEY (previous_version_id) REFERENCES content_versions(id)
                 );
 
@@ -174,6 +258,31 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_drafts_source ON content_drafts(source_name);
                 CREATE INDEX IF NOT EXISTS idx_drafts_status ON content_drafts(status);
                 CREATE INDEX IF NOT EXISTS idx_history_source ON execution_history(source_name);
+
+                CREATE TABLE IF NOT EXISTS metrics_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    metric_name TEXT NOT NULL,
+                    metric_value REAL NOT NULL,
+                    labels TEXT DEFAULT '{}'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics_events(metric_name);
+                CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics_events(timestamp);
+
+                CREATE TABLE IF NOT EXISTS scheduled_job_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_name TEXT UNIQUE NOT NULL,
+                    cron_expression TEXT NOT NULL,
+                    is_paused BOOLEAN DEFAULT FALSE,
+                    last_run_at TEXT,
+                    last_run_status TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_job_state_source ON scheduled_job_state(source_name);
             """)
 
     # Content Versions
@@ -271,6 +380,8 @@ class Database:
         content_hash: str,
         diff_summary: Optional[str] = None,
         previous_version_id: Optional[int] = None,
+        quality_score: Optional[float] = None,
+        quality_details: Optional[str] = None,
     ) -> ContentDraft:
         """Create a new draft for review."""
         now = datetime.now().isoformat()
@@ -284,9 +395,9 @@ class Database:
 
             cursor = conn.execute(
                 """INSERT INTO content_drafts
-                   (source_name, content, content_hash, created_at, status, diff_summary, previous_version_id)
-                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-                (source_name, content, content_hash, now, diff_summary, previous_version_id)
+                   (source_name, content, content_hash, created_at, status, diff_summary, previous_version_id, quality_score, quality_details)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+                (source_name, content, content_hash, now, diff_summary, previous_version_id, quality_score, quality_details)
             )
 
             return ContentDraft(
@@ -298,6 +409,8 @@ class Database:
                 status="pending",
                 diff_summary=diff_summary,
                 previous_version_id=previous_version_id,
+                quality_score=quality_score,
+                quality_details=quality_details,
             )
 
     def get_pending_drafts(self, source_name: Optional[str] = None) -> list[ContentDraft]:
@@ -439,3 +552,235 @@ class Database:
                 (f'-{days} days',)
             )
             return cursor.rowcount
+
+    # Metrics
+    def save_metric(
+        self,
+        metric_name: str,
+        metric_value: float,
+        labels: Optional[dict] = None,
+    ) -> MetricEvent:
+        """Save a metric event."""
+        now = datetime.now(timezone.utc).isoformat()
+        labels_json = json.dumps(labels or {})
+
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """INSERT INTO metrics_events (timestamp, metric_name, metric_value, labels)
+                   VALUES (?, ?, ?, ?)""",
+                (now, metric_name, metric_value, labels_json)
+            )
+
+            return MetricEvent(
+                id=cursor.lastrowid,
+                timestamp=now,
+                metric_name=metric_name,
+                metric_value=metric_value,
+                labels=labels or {},
+            )
+
+    def get_metrics(
+        self,
+        metric_name: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+        limit: int = 1000,
+    ) -> list[MetricEvent]:
+        """Get metric events with optional filtering."""
+        with self._get_conn() as conn:
+            query = "SELECT * FROM metrics_events WHERE 1=1"
+            params = []
+
+            if metric_name:
+                query += " AND metric_name = ?"
+                params.append(metric_name)
+
+            if start_time:
+                query += " AND timestamp >= ?"
+                params.append(start_time)
+
+            if end_time:
+                query += " AND timestamp <= ?"
+                params.append(end_time)
+
+            query += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(query, params).fetchall()
+
+            results = []
+            for row in rows:
+                row_dict = dict(row)
+                row_dict["labels"] = json.loads(row_dict.get("labels", "{}"))
+                # Filter by labels if specified
+                if labels:
+                    if all(row_dict["labels"].get(k) == v for k, v in labels.items()):
+                        results.append(MetricEvent(**row_dict))
+                else:
+                    results.append(MetricEvent(**row_dict))
+
+            return results
+
+    def get_metric_summary(
+        self,
+        metric_name: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+    ) -> dict:
+        """Get summary statistics for a metric."""
+        with self._get_conn() as conn:
+            query = """
+                SELECT
+                    COUNT(*) as count,
+                    SUM(metric_value) as total,
+                    AVG(metric_value) as avg,
+                    MIN(metric_value) as min,
+                    MAX(metric_value) as max
+                FROM metrics_events
+                WHERE metric_name = ?
+            """
+            params = [metric_name]
+
+            if start_time:
+                query += " AND timestamp >= ?"
+                params.append(start_time)
+
+            if end_time:
+                query += " AND timestamp <= ?"
+                params.append(end_time)
+
+            row = conn.execute(query, params).fetchone()
+
+            return {
+                "count": row["count"] or 0,
+                "total": row["total"] or 0,
+                "avg": row["avg"] or 0,
+                "min": row["min"] or 0,
+                "max": row["max"] or 0,
+            }
+
+    def cleanup_old_metrics(self, days: int = 30) -> int:
+        """Delete metrics older than N days."""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """DELETE FROM metrics_events
+                   WHERE datetime(timestamp) < datetime('now', ?)""",
+                (f'-{days} days',)
+            )
+            return cursor.rowcount
+
+    # Scheduled Jobs
+    def save_job_state(
+        self,
+        source_name: str,
+        cron_expression: str,
+        is_paused: bool = False,
+    ) -> ScheduledJobState:
+        """Save or update a scheduled job state."""
+        now = datetime.now().isoformat()
+
+        with self._get_conn() as conn:
+            # Try to update existing, otherwise insert
+            cursor = conn.execute(
+                """INSERT INTO scheduled_job_state
+                   (source_name, cron_expression, is_paused, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(source_name) DO UPDATE SET
+                   cron_expression = excluded.cron_expression,
+                   updated_at = excluded.updated_at""",
+                (source_name, cron_expression, is_paused, now, now)
+            )
+
+            # Fetch the saved/updated record
+            row = conn.execute(
+                "SELECT * FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            ).fetchone()
+
+            return ScheduledJobState(**dict(row))
+
+    def get_job_state(self, source_name: str) -> Optional[ScheduledJobState]:
+        """Get the state of a scheduled job by source name."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            ).fetchone()
+
+            if row:
+                return ScheduledJobState(**dict(row))
+            return None
+
+    def get_all_job_states(self) -> list[ScheduledJobState]:
+        """Get all scheduled job states."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_job_state ORDER BY source_name"
+            ).fetchall()
+
+            return [ScheduledJobState(**dict(row)) for row in rows]
+
+    def update_job_state(
+        self,
+        source_name: str,
+        is_paused: Optional[bool] = None,
+        last_run_at: Optional[str] = None,
+        last_run_status: Optional[str] = None,
+        last_error: Optional[str] = None,
+        cron_expression: Optional[str] = None,
+    ) -> Optional[ScheduledJobState]:
+        """Update a scheduled job state. Returns None if job not found."""
+        now = datetime.now().isoformat()
+
+        with self._get_conn() as conn:
+            # Build dynamic update query
+            updates = ["updated_at = ?"]
+            params = [now]
+
+            if is_paused is not None:
+                updates.append("is_paused = ?")
+                params.append(is_paused)
+
+            if last_run_at is not None:
+                updates.append("last_run_at = ?")
+                params.append(last_run_at)
+
+            if last_run_status is not None:
+                updates.append("last_run_status = ?")
+                params.append(last_run_status)
+
+            if last_error is not None:
+                updates.append("last_error = ?")
+                params.append(last_error)
+
+            if cron_expression is not None:
+                updates.append("cron_expression = ?")
+                params.append(cron_expression)
+
+            params.append(source_name)
+
+            conn.execute(
+                f"UPDATE scheduled_job_state SET {', '.join(updates)} WHERE source_name = ?",
+                params
+            )
+
+            # Fetch updated record
+            row = conn.execute(
+                "SELECT * FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            ).fetchone()
+
+            if row:
+                return ScheduledJobState(**dict(row))
+            return None
+
+    def delete_job_state(self, source_name: str) -> bool:
+        """Delete a scheduled job state. Returns True if deleted."""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM scheduled_job_state WHERE source_name = ?",
+                (source_name,)
+            )
+            return cursor.rowcount > 0

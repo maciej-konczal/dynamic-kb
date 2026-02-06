@@ -70,12 +70,15 @@ class Storage:
         content: str,
         content_hash: str,
         diff_summary: Optional[str] = None,
+        quality_score: Optional[float] = None,
+        quality_details: Optional[str] = None,
     ) -> ContentDraft:
         """Create a new draft for review."""
         previous = self.get_latest_version(source_name)
         previous_id = previous.id if previous else None
         return self.db.create_draft(
-            source_name, content, content_hash, diff_summary, previous_id
+            source_name, content, content_hash, diff_summary, previous_id,
+            quality_score, quality_details
         )
 
     def get_pending_drafts(self, source_name: Optional[str] = None) -> list[ContentDraft]:

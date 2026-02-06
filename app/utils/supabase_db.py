@@ -1,12 +1,12 @@
 """Supabase database backend for content storage and versioning."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from supabase import create_client, Client
 
-from app.utils.database import ContentVersion, ContentDraft, ExecutionRecord
+from app.utils.database import ContentVersion, ContentDraft, ExecutionRecord, MetricEvent
 
 
 class SupabaseDatabase:
@@ -47,6 +47,8 @@ class SupabaseDatabase:
             status=row["status"],
             diff_summary=row.get("diff_summary"),
             previous_version_id=row.get("previous_version_id"),
+            quality_score=row.get("quality_score"),
+            quality_details=row.get("quality_details"),
         )
 
     def _row_to_execution(self, row: dict) -> ExecutionRecord:
@@ -61,6 +63,16 @@ class SupabaseDatabase:
             error=row.get("error"),
             diff_summary=row.get("diff_summary"),
             version_id=row.get("version_id"),
+        )
+
+    def _row_to_metric(self, row: dict) -> MetricEvent:
+        """Convert a Supabase row to MetricEvent."""
+        return MetricEvent(
+            id=row["id"],
+            timestamp=row["timestamp"],
+            metric_name=row["metric_name"],
+            metric_value=row["metric_value"],
+            labels=row.get("labels") or {},
         )
 
     # Content Versions
@@ -162,6 +174,8 @@ class SupabaseDatabase:
         content_hash: str,
         diff_summary: Optional[str] = None,
         previous_version_id: Optional[int] = None,
+        quality_score: Optional[float] = None,
+        quality_details: Optional[str] = None,
     ) -> ContentDraft:
         """Create a new draft for review."""
         now = self._now_iso()
@@ -180,6 +194,8 @@ class SupabaseDatabase:
             "status": "pending",
             "diff_summary": diff_summary,
             "previous_version_id": previous_version_id,
+            "quality_score": quality_score,
+            "quality_details": quality_details,
         }
 
         result = self.client.table("content_drafts").insert(data).execute()
@@ -316,8 +332,6 @@ class SupabaseDatabase:
 
     def cleanup_old_drafts(self, days: int = 7) -> int:
         """Delete drafts older than N days that aren't pending."""
-        from datetime import timedelta
-
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
         # Get drafts to delete
@@ -332,6 +346,123 @@ class SupabaseDatabase:
         deleted_count = 0
         for row in result.data:
             self.client.table("content_drafts").delete().eq("id", row["id"]).execute()
+            deleted_count += 1
+
+        return deleted_count
+
+    # Metrics
+    def save_metric(
+        self,
+        metric_name: str,
+        metric_value: float,
+        labels: Optional[dict] = None,
+    ) -> MetricEvent:
+        """Save a metric event to Supabase."""
+        now = self._now_iso()
+
+        data = {
+            "timestamp": now,
+            "metric_name": metric_name,
+            "metric_value": metric_value,
+            "labels": labels or {},
+        }
+
+        result = self.client.table("metrics_events").insert(data).execute()
+        row = result.data[0]
+        return self._row_to_metric(row)
+
+    def get_metrics(
+        self,
+        metric_name: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+        limit: int = 1000,
+    ) -> list[MetricEvent]:
+        """Get metric events with optional filtering."""
+        query = (
+            self.client.table("metrics_events")
+            .select("*")
+            .order("timestamp", desc=True)
+            .limit(limit)
+        )
+
+        if metric_name:
+            query = query.eq("metric_name", metric_name)
+
+        if start_time:
+            query = query.gte("timestamp", start_time)
+
+        if end_time:
+            query = query.lte("timestamp", end_time)
+
+        result = query.execute()
+
+        metrics = []
+        for row in result.data:
+            metric = self._row_to_metric(row)
+            # Filter by labels if specified
+            if labels:
+                if all(metric.labels.get(k) == v for k, v in labels.items()):
+                    metrics.append(metric)
+            else:
+                metrics.append(metric)
+
+        return metrics
+
+    def get_metric_summary(
+        self,
+        metric_name: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        labels: Optional[dict] = None,
+    ) -> dict:
+        """Get summary statistics for a metric.
+
+        Note: Supabase doesn't support aggregations directly,
+        so we fetch all and compute in Python.
+        """
+        metrics = self.get_metrics(
+            metric_name=metric_name,
+            start_time=start_time,
+            end_time=end_time,
+            labels=labels,
+            limit=10000,  # Higher limit for aggregation
+        )
+
+        if not metrics:
+            return {
+                "count": 0,
+                "total": 0,
+                "avg": 0,
+                "min": 0,
+                "max": 0,
+            }
+
+        values = [m.metric_value for m in metrics]
+        return {
+            "count": len(values),
+            "total": sum(values),
+            "avg": sum(values) / len(values),
+            "min": min(values),
+            "max": max(values),
+        }
+
+    def cleanup_old_metrics(self, days: int = 30) -> int:
+        """Delete metrics older than N days."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        # Get metrics to delete
+        result = (
+            self.client.table("metrics_events")
+            .select("id")
+            .lt("timestamp", cutoff)
+            .execute()
+        )
+
+        deleted_count = 0
+        for row in result.data:
+            self.client.table("metrics_events").delete().eq("id", row["id"]).execute()
             deleted_count += 1
 
         return deleted_count
